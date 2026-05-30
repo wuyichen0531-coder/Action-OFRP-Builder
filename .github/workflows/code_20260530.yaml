@@ -1,182 +1,119 @@
-name: OPPO A1 Pro 橙狐R14全自动编译
+name: OPPO A1 Pro OrangeFox R14 Build
 permissions:
   contents: write
-  actions: read
 
 on:
   workflow_dispatch:
     inputs:
-      MANIFEST_BRANCH:
-        description: 橙狐版本分支
+      boot_img_url:
+        description: Boot.img download URL (leave empty to use repo root boot.img)
+        required: false
+        default: ''
+      device:
+        description: Device codename
+        required: true
+        default: 'holi'
+      branch:
+        description: OrangeFox branch
         required: true
         default: '14.1'
         type: choice
         options:
           - '14.1'
           - '12.1'
-      BOOT_IMG_URL:
-        description: 原装boot.img下载地址（不传则读取仓库根目录的boot.img）
-        required: false
-        default: ''
-      DEVICE_NAME:
-        description: 设备代号（OPPO A1 Pro无需修改）
-        required: true
-        default: 'holi'
-      BUILD_TARGET:
-        description: 编译目标（必须选boot）
-        required: true
-        default: 'boot'
-        type: choice
-        options:
-          - 'boot'
-          - 'recovery'
 
 jobs:
   build:
-    if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-24.04
     steps:
-      - name: 1. 检出仓库代码
+      - name: Step 1 - Checkout repo
         uses: actions/checkout@v4
 
-      - name: 2. 清理工作空间
+      - name: Step 2 - Clean workspace
         uses: rokibhasansagar/slimhub_actions@main
 
-      - name: 3. 初始化工作目录
-        id: pwd
+      - name: Step 3 - Create work dir
         run: |
-          set -e
-          mkdir workspace
-          cd workspace
-          echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+          mkdir -p work
+          echo "WORK_DIR=$(pwd)/work" >> $GITHUB_ENV
 
-      - name: 4. 安装编译依赖
+      - name: Step 4 - Install dependencies
         run: |
-          set -e
-          sudo apt update && sudo apt upgrade -y
-          DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            git python3 python3-pip tar aria2 wget unzip openjdk-17-jdk \
-            device-tree-compiler git-lfs rsync
+          sudo apt update -y
+          sudo apt install -y git python3 python3-pip wget unzip openjdk-17-jdk rsync
           pip3 install twrpdtgen
           git clone https://gitlab.com/OrangeFox/misc/scripts
           cd scripts
           sudo bash setup/android_build_env.sh
-          sed -i 's/cd -/cd ../g' setup/install_android_sdk.sh
-          sudo bash setup/install_android_sdk.sh
 
-      - name: 5. 配置Java环境
+      - name: Step 5 - Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: zulu
-          java-version: '17'
+          java-version: 17
 
-      - name: 6. 获取原装boot.img
+      - name: Step 6 - Get boot.img
         run: |
-          set -e
-          WS="${{ steps.pwd.outputs.workspace-folder }}"
-          BOOT_URL="${{ github.event.inputs.BOOT_IMG_URL }}"
-          cd "$WS"
-          if [ -n "$BOOT_URL" ]; then
-            wget -O boot.img "$BOOT_URL"
-            echo "已下载用户指定的boot.img"
-          elif [ -f "../boot.img" ]; then
-            cp ../boot.img .
-            echo "已读取仓库根目录的boot.img"
+          cd $WORK_DIR
+          if [ -n "${{ inputs.boot_img_url }}" ]; then
+            wget -O boot.img "${{ inputs.boot_img_url }}"
           else
-            echo "错误：未找到boot.img，请上传到仓库根目录"
-            exit 1
+            cp ../boot.img .
           fi
-          SIZE=$(stat -c%s boot.img)
-          if [ "$SIZE" -lt 30000000 ]; then
-            echo "错误：boot.img文件过小，可能损坏"
-            exit 1
-          fi
-          echo "boot.img准备完成，大小：$SIZE 字节"
 
-      - name: 7. 解包boot.img提取原厂内容
+      - name: Step 7 - Unpack boot.img
         run: |
-          set -e
-          WS="${{ steps.pwd.outputs.workspace-folder }}"
-          cd "$WS"
-          git clone --depth 1 https://github.com/cfig/Android_boot_image_editor.git boot_tool
-          cd boot_tool
+          cd $WORK_DIR
+          git clone --depth 1 https://github.com/cfig/Android_boot_image_editor.git unpacker
+          cd unpacker
           cp ../boot.img .
           ./gradlew unpack
-          cd build/unzip_boot/ramdisk
-          
-          mkdir -p "$WS/prebuilt/modules"
-          find . -name "*.ko" -type f -exec rsync -L {} "$WS/prebuilt/modules/" \;
-          KO_COUNT=$(ls "$WS/prebuilt/modules/" | wc -l)
-          echo "提取驱动模块：$KO_COUNT 个"
-          
-          mkdir -p "$WS/prebuilt/firmware"
-          find . -type f \( -name "*.bin" -o -name "*.fw" -o -name "*.mdt" \) -exec rsync -L {} "$WS/prebuilt/firmware/" \; 2>/dev/null || true
-          FW_COUNT=$(ls "$WS/prebuilt/firmware/" | wc -l)
-          echo "提取固件文件：$FW_COUNT 个"
-          
-          mkdir -p "$WS/prebuilt/rc"
-          find . -name "init*.rc" -type f -exec rsync -L {} "$WS/prebuilt/rc/" \;
-          find . -name "ueventd*.rc" -type f -exec rsync -L {} "$WS/prebuilt/rc/" \;
-          RC_COUNT=$(ls "$WS/prebuilt/rc/" | wc -l)
-          echo "提取启动脚本：$RC_COUNT 个"
-          
-          cd ../../..
-          # 把cmdline写入临时文件，完全避免特殊字符
-          cat build/unzip_boot/cmdline.txt > "$WS/cmdline.txt"
-          echo "✅ 原厂启动参数已保存"
-          
-          cd "$WS"
-          rm -rf boot_tool
-          echo "所有原厂内容提取完成"
+          # Save cmdline to file
+          cat build/unzip_boot/cmdline.txt > ../cmdline.txt
+          # Copy modules
+          mkdir -p ../prebuilt/modules
+          find build/unzip_boot/ramdisk -name "*.ko" -type f -exec rsync -L {} ../prebuilt/modules/ \;
+          # Copy firmware
+          mkdir -p ../prebuilt/firmware
+          find build/unzip_boot/ramdisk -type f -name "*.bin" -exec rsync -L {} ../prebuilt/firmware/ \; 2>/dev/null || true
+          # Copy rc scripts
+          mkdir -p ../prebuilt/rc
+          find build/unzip_boot/ramdisk -name "init*.rc" -type f -exec rsync -L {} ../prebuilt/rc/ \;
+          find build/unzip_boot/ramdisk -name "ueventd*.rc" -type f -exec rsync -L {} ../prebuilt/rc/ \;
+          cd ..
+          rm -rf unpacker
 
-      - name: 8. 自动生成设备树
+      - name: Step 8 - Generate device tree
         run: |
-          set -e
-          WS="${{ steps.pwd.outputs.workspace-folder }}"
-          DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
-          cd "$WS"
-          python3 -m twrpdtgen boot.img -o device_tree
-          DEVICE_PATH="device/qualcomm/$DEVICE"
-          mkdir -p "$DEVICE_PATH"
-          cp -r device_tree/* "$DEVICE_PATH/"
-          rm -rf device_tree
-          echo "DEVICE_PATH=$DEVICE_PATH" >> $GITHUB_ENV
-          echo "设备树生成完成，路径：$DEVICE_PATH"
+          cd $WORK_DIR
+          python3 -m twrpdtgen boot.img -o dt
+          mkdir -p device/qualcomm/${{ inputs.device }}
+          cp -r dt/* device/qualcomm/${{ inputs.device }}/
+          rm -rf dt
 
-      - name: 9. 追加橙狐配置+OPPO兼容（修复第166行特殊字符错误）
+      - name: Step 9 - Add original cmdline
         run: |
-          set -e
-          WS="${{ steps.pwd.outputs.workspace-folder }}"
-          DEVICE_PATH="${{ env.DEVICE_PATH }}"
-          cd "$WS/$DEVICE_PATH"
-          echo "开始追加配置，不修改任何原厂内容"
-
-          # ==============================================
-          # 彻底修复：不用命令替换，直接拼接文件写入cmdline
-          # ==============================================
+          cd $WORK_DIR/device/qualcomm/${{ inputs.device }}
           echo "" >> BoardConfig.mk
-          echo "# 原厂启动参数" >> BoardConfig.mk
+          echo "# Original boot cmdline" >> BoardConfig.mk
           echo -n "BOARD_KERNEL_CMDLINE += " >> BoardConfig.mk
-          cat "$WS/cmdline.txt" >> BoardConfig.mk
-          echo "" >> BoardConfig.mk
+          cat $WORK_DIR/cmdline.txt >> BoardConfig.mk
           echo "" >> BoardConfig.mk
 
-          cat >> BoardConfig.mk << 'ENDOFCFG'
-# 橙狐R14基础配置
+      - name: Step 10 - Add OrangeFox config
+        run: |
+          cd $WORK_DIR/device/qualcomm/${{ inputs.device }}
+          cat >> BoardConfig.mk << 'EOF'
 FOX_VIRTUAL_AB_DEVICE := 1
 FOX_USES_RECOVERY_AS_BOOT := 1
 FOX_NO_RECOVERY_PARTITION := 1
 FOX_SUPPORT_AB_SLOTS := 1
 FOX_BUILD_TYPE := Stable
-FOX_VERSION := "R14.1"
-FOX_OTA_VERSION := "R14.1"
+FOX_VERSION := R14.1
 FOX_BUILD_BOOTIMAGE := 1
-TARGET_RECOVERY_TASK_PROFILES := true
 FOX_DISABLE_HAPTICS := 1
 BOARD_VNDK_VERSION := current
 
-# OPPO FBE解密支持
 TW_INCLUDE_CRYPTO := true
 TW_INCLUDE_CRYPTO_FBE := true
 TW_INCLUDE_FBE_METADATA_DECRYPT := true
@@ -185,34 +122,104 @@ TW_USE_FSCRYPT_POLICY := 2
 TW_PREPARE_DATA_MEDIA_EARLY := true
 BOARD_USES_QCOM_FBE_DECRYPTION := true
 TARGET_CRYPTFS_HW_PATH := vendor/qcom/opensource/commonsys/cryptfs_hw
-TW_OZIP_DECRYPT_KEY := "1C4C1EA3A12531AE491B21BB31613C11"
+TW_OZIP_DECRYPT_KEY := 1C4C1EA3A12531AE491B21BB31613C11
 
-# AVB校验绕过
 FOX_DISABLE_AVB := 1
 FOX_PATCH_VBMETA := 1
 
-# 动态分区兼容
 BOARD_USES_PRODUCTIMAGE := true
 BOARD_USES_VENDORIMAGE := true
-BOARD_ROOT_EXTRA_FOLDERS := odm product vendor my_heytap my_product my_bigball
+BOARD_ROOT_EXTRA_FOLDERS := odm product vendor
 
-# OPPO编译错误绕过
 BUILD_BROKEN_DUP_RULES := true
 BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
 ALLOW_MISSING_DEPENDENCIES := true
-ENDOFCFG
-          echo "BoardConfig.mk配置完成"
+EOF
 
+      - name: Step 11 - Copy prebuilt files
+        run: |
+          cd $WORK_DIR/device/qualcomm/${{ inputs.device }}
           mkdir -p prebuilt
-          cp -r "$WS/prebuilt/modules" prebuilt/
-          cp -r "$WS/prebuilt/firmware" prebuilt/
+          cp -r $WORK_DIR/prebuilt/modules prebuilt/
+          cp -r $WORK_DIR/prebuilt/firmware prebuilt/
           mkdir -p recovery/root
-          cp -r "$WS/prebuilt/rc/"* recovery/root/
-          echo "原厂资源补齐完成"
+          cp -r $WORK_DIR/prebuilt/rc/* recovery/root/
 
-          echo "" >> recovery.fstab
-          cat >> recovery.fstab << 'ENDOFFSTAB'
-# 橙狐适配分区
-/data f2fs /dev/block/by-name/userdata flags=encryptable=footer;length=-16384;fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized+wrappedkey_v0,metadata_encryption=aes-256-xts:wrappedkey_v0,keydirectory=/metadata/v0,uses_fde_or_fbe=fbe,fbe_version=2
-/metadata ext4 /dev/block/by-name/metadata flags=backup=1;encryptable=footer
-/vendor_b
+      - name: Step 12 - Update recovery.fstab
+        run: |
+          cd $WORK_DIR/device/qualcomm/${{ inputs.device }}
+          cat >> recovery.fstab << 'EOF'
+
+/data f2fs /dev/block/by-name/userdata flags=encryptable=footer
+/metadata ext4 /dev/block/by-name/metadata flags=backup=1
+/vendor_boot emmc /dev/block/by-name/vendor_boot flags=backup=1;slotselect
+/dtbo emmc /dev/block/by-name/dtbo flags=backup=1;slotselect
+/vbmeta emmc /dev/block/by-name/vbmeta flags=backup=1;slotselect
+/vbmeta_system emmc /dev/block/by-name/vbmeta_system flags=backup=1;slotselect
+EOF
+
+      - name: Step 13 - Update device.mk
+        run: |
+          cd $WORK_DIR/device/qualcomm/${{ inputs.device }}
+          cat >> device.mk << 'EOF'
+
+PRODUCT_RELEASE_NAME := holi
+PRODUCT_DEVICE := holi
+PRODUCT_NAME := twrp_holi
+PRODUCT_BRAND := OPPO
+PRODUCT_MODEL := OPPO A1 Pro 5G
+PRODUCT_MANUFACTURER := OPPO
+
+PRODUCT_USE_DYNAMIC_PARTITIONS := true
+PRODUCT_BUILD_SUPER_PARTITIONS := false
+
+PRODUCT_PACKAGES += qcom_decrypt qcom_decrypt_fbe
+PRODUCT_PACKAGES += busybox mkshrc toybox_static
+
+PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/prebuilt/modules,lib/modules)
+PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/prebuilt/firmware,vendor/firmware)
+PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/recovery/root,root)
+EOF
+
+      - name: Step 14 - Sync OrangeFox source
+        run: |
+          cd $WORK_DIR
+          git clone https://gitlab.com/OrangeFox/sync.git
+          cd sync
+          ./orangefox_sync.sh --branch ${{ inputs.branch }} --path $WORK_DIR/fox
+          cp -r $WORK_DIR/device $WORK_DIR/fox/
+
+      - name: Step 15 - Setup swap
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
+
+      - name: Step 16 - Build OrangeFox
+        run: |
+          cd $WORK_DIR/fox
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          lunch twrp_${{ inputs.device }}-ap2a-eng
+          make clean
+          mka adbd bootimage -j$(nproc)
+
+      - name: Step 17 - Verify output
+        run: |
+          OUT=$WORK_DIR/fox/out/target/product/${{ inputs.device }}
+          ls -lh $OUT/boot.img
+          if [ ! -f $OUT/boot.img ]; then
+            echo "Build failed!"
+            exit 1
+          fi
+
+      - name: Step 18 - Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.WORK_DIR }}/fox/out/target/product/${{ inputs.device }}/boot.img
+          name: OrangeFox R14.1 for OPPO A1 Pro
+          tag_name: build-${{ github.run_id }}
+          body: |
+            Flash command:
+            fastboot flash boot_a boot.img
+            fastboot flash boot_b boot.img
+            fastboot reboot recovery
