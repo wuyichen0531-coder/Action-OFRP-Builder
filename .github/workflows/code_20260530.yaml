@@ -122,9 +122,9 @@ jobs:
           echo "提取启动脚本：$RC_COUNT 个"
           
           cd ../../..
-          # 修复：把cmdline写入临时文件，避免特殊字符冲突
+          # 把cmdline写入临时文件，完全避免特殊字符
           cat build/unzip_boot/cmdline.txt > "$WS/cmdline.txt"
-          echo "✅ 原厂启动参数已保存到临时文件"
+          echo "✅ 原厂启动参数已保存"
           
           cd "$WS"
           rm -rf boot_tool
@@ -144,7 +144,7 @@ jobs:
           echo "DEVICE_PATH=$DEVICE_PATH" >> $GITHUB_ENV
           echo "设备树生成完成，路径：$DEVICE_PATH"
 
-      - name: 9. 追加橙狐配置+OPPO兼容（修复第163行特殊字符错误）
+      - name: 9. 追加橙狐配置+OPPO兼容（修复第166行特殊字符错误）
         run: |
           set -e
           WS="${{ steps.pwd.outputs.workspace-folder }}"
@@ -152,10 +152,14 @@ jobs:
           cd "$WS/$DEVICE_PATH"
           echo "开始追加配置，不修改任何原厂内容"
 
-          # 修复：从临时文件读取cmdline，避免特殊字符冲突
+          # ==============================================
+          # 彻底修复：不用命令替换，直接拼接文件写入cmdline
+          # ==============================================
           echo "" >> BoardConfig.mk
           echo "# 原厂启动参数" >> BoardConfig.mk
-          echo "BOARD_KERNEL_CMDLINE += $(cat $WS/cmdline.txt)" >> BoardConfig.mk
+          echo -n "BOARD_KERNEL_CMDLINE += " >> BoardConfig.mk
+          cat "$WS/cmdline.txt" >> BoardConfig.mk
+          echo "" >> BoardConfig.mk
           echo "" >> BoardConfig.mk
 
           cat >> BoardConfig.mk << 'ENDOFCFG'
@@ -211,100 +215,4 @@ ENDOFCFG
 # 橙狐适配分区
 /data f2fs /dev/block/by-name/userdata flags=encryptable=footer;length=-16384;fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized+wrappedkey_v0,metadata_encryption=aes-256-xts:wrappedkey_v0,keydirectory=/metadata/v0,uses_fde_or_fbe=fbe,fbe_version=2
 /metadata ext4 /dev/block/by-name/metadata flags=backup=1;encryptable=footer
-/vendor_boot emmc /dev/block/by-name/vendor_boot flags=display=Vendor Boot;backup=1;slotselect;flashimg=1
-/dtbo emmc /dev/block/by-name/dtbo flags=display=DTBO;backup=1;slotselect;flashimg=1
-/vbmeta emmc /dev/block/by-name/vbmeta flags=display=VBMeta;backup=1;slotselect;flashimg=1
-/vbmeta_system emmc /dev/block/by-name/vbmeta_system flags=display=VBMeta System;backup=1;slotselect;flashimg=1
-/my_heytap ext4 /dev/block/by-name/my_heytap flags=display=HeyTap;backup=1
-/my_product ext4 /dev/block/by-name/my_product flags=display=My Product;backup=1
-ENDOFFSTAB
-          echo "recovery.fstab配置完成"
-
-          echo "" >> device.mk
-          cat >> device.mk << 'ENDOFDEV'
-# 橙狐设备配置
-PRODUCT_RELEASE_NAME := holi
-PRODUCT_DEVICE := holi
-PRODUCT_NAME := twrp_holi
-PRODUCT_BRAND := OPPO
-PRODUCT_MODEL := OPPO A1 Pro 5G
-PRODUCT_MANUFACTURER := OPPO
-
-PRODUCT_USE_DYNAMIC_PARTITIONS := true
-PRODUCT_BUILD_SUPER_PARTITIONS := false
-
-PRODUCT_PACKAGES += qcom_decrypt qcom_decrypt_fbe android.hardware.keymaster@4.0-impl android.hardware.keymaster@4.0-service
-PRODUCT_PACKAGES += busybox mkshrc toybox_static
-
-PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/prebuilt/modules,lib/modules)
-PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/prebuilt/firmware,vendor/firmware)
-PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/recovery/root,root)
-ENDOFDEV
-          echo "device.mk配置完成"
-          echo "所有配置处理完成"
-
-      - name: 10. 同步橙狐源码
-        run: |
-          set -e
-          WS="${{ steps.pwd.outputs.workspace-folder }}"
-          BRANCH="${{ github.event.inputs.MANIFEST_BRANCH }}"
-          cd "$WS"
-          git clone https://gitlab.com/OrangeFox/sync.git
-          cd sync
-          ./orangefox_sync.sh --branch "$BRANCH" --path "$WS/fox_$BRANCH"
-          cp -r device "$WS/fox_$BRANCH/"
-          echo "源码同步完成"
-
-      - name: 11. 设置交换空间
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 16
-
-      - name: 12. 编译橙狐
-        run: |
-          set -e
-          WS="${{ steps.pwd.outputs.workspace-folder }}"
-          BRANCH="${{ github.event.inputs.MANIFEST_BRANCH }}"
-          DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
-          TARGET="${{ github.event.inputs.BUILD_TARGET }}"
-          cd "$WS/fox_$BRANCH"
-          source build/envsetup.sh
-          export ALLOW_MISSING_DEPENDENCIES=true
-          lunch "twrp_$DEVICE-ap2a-eng"
-          make clean
-          mka adbd "${TARGET}image" -j$(nproc --all)
-          echo "编译完成"
-
-      - name: 13. 验证编译产物
-        run: |
-          set -e
-          WS="${{ steps.pwd.outputs.workspace-folder }}"
-          BRANCH="${{ github.event.inputs.MANIFEST_BRANCH }}"
-          DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
-          OUT_DIR="$WS/fox_$BRANCH/out/target/product/$DEVICE"
-          ls -lh "$OUT_DIR"/*.img "$OUT_DIR"/*.zip 2>/dev/null
-          if [ -f "$OUT_DIR/boot.img" ]; then
-            SIZE=$(stat -c%s "$OUT_DIR/boot.img")
-            echo "编译成功！成品大小：$SIZE 字节"
-          else
-            echo "编译失败，未找到成品"
-            exit 1
-          fi
-
-      - name: 14. 发布到Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
-            ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-          name: 橙狐R14.1 for OPPO A1 Pro ${{ github.run_id }}
-          tag_name: ${{ github.run_id }}
-          body: |
-            ## 橙狐 R14.1 for OPPO A1 Pro (holi)
-            ✅ 全自动编译生成，已适配OPPO所有定制化
-            ### 刷入方法
-            ```bash
-            fastboot flash boot_a OrangeFox-boot.img
-            fastboot flash boot_b OrangeFox-boot.img
-            fastboot reboot recovery
-            ```
+/vendor_b
