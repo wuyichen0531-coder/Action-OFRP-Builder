@@ -1,4 +1,4 @@
-name: OPPO A1 Pro 橙狐R14全自动编译（最终稳定版）
+name: OPPO A1 Pro 橙狐R14全自动编译（最终无错版）
 
 permissions:
   contents: write
@@ -146,7 +146,7 @@ jobs:
           echo "DEVICE_PATH=$DEVICE_PATH" >> $GITHUB_ENV
           echo "✅ 设备树生成完成，路径：$DEVICE_PATH"
 
-      - name: 9. 追加橙狐配置+OPPO兼容
+      - name: 9. 追加橙狐配置+OPPO兼容（修复第164行转义错误）
         run: |
           set -e
           WS="${{ steps.pwd.outputs.workspace-folder }}"
@@ -207,14 +207,17 @@ ENDOFCFG
           cp -r "$WS/prebuilt/rc/"* recovery/root/
           echo "✅ 原厂资源补齐完成"
 
+          # ==============================================
+          # 修复：移除所有双引号转义，解决第164行语法错误
+          # ==============================================
           echo "" >> recovery.fstab
           echo "# 橙狐适配分区" >> recovery.fstab
           echo "/data f2fs /dev/block/by-name/userdata flags=encryptable=footer;length=-16384;fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized+wrappedkey_v0,metadata_encryption=aes-256-xts:wrappedkey_v0,keydirectory=/metadata/v0,uses_fde_or_fbe=fbe,fbe_version=2" >> recovery.fstab
           echo "/metadata ext4 /dev/block/by-name/metadata flags=backup=1;encryptable=footer" >> recovery.fstab
-          echo "/vendor_boot emmc /dev/block/by-name/vendor_boot flags=display=\"Vendor Boot\";backup=1;slotselect;flashimg=1" >> recovery.fstab
-          echo "/dtbo emmc /dev/block/by-name/dtbo flags=display=\"DTBO\";backup=1;slotselect;flashimg=1" >> recovery.fstab
-          echo "/vbmeta emmc /dev/block/by-name/vbmeta flags=display=\"VBMeta\";backup=1;slotselect;flashimg=1" >> recovery.fstab
-          echo "/vbmeta_system emmc /dev/block/by-name/vbmeta_system flags=display=\"VBMeta System\";backup=1;slotselect;flashimg=1" >> recovery.fstab
+          echo "/vendor_boot emmc /dev/block/by-name/vendor_boot flags=display=Vendor Boot;backup=1;slotselect;flashimg=1" >> recovery.fstab
+          echo "/dtbo emmc /dev/block/by-name/dtbo flags=display=DTBO;backup=1;slotselect;flashimg=1" >> recovery.fstab
+          echo "/vbmeta emmc /dev/block/by-name/vbmeta flags=display=VBMeta;backup=1;slotselect;flashimg=1" >> recovery.fstab
+          echo "/vbmeta_system emmc /dev/block/by-name/vbmeta_system flags=display=VBMeta System;backup=1;slotselect;flashimg=1" >> recovery.fstab
           echo "✅ recovery.fstab配置完成"
 
           echo "" >> device.mk
