@@ -1,0 +1,428 @@
+name: "OrangeFox R14 Recovery Build"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+      - "master"
+
+permissions:
+  contents: "write"
+  packages: "write"
+  actions: "write"
+
+env:
+  DEVICE: "PHQ110"
+  DEVICE_NAME: "OPPO A1 Pro 5G"
+  MANIFEST: "https://gitlab.com/OrangeFox/Manifest.git"
+  BRANCH: "fox_14.1"
+  BUILD_TARGET: "recoveryimage"
+  CCACHE_DIR: "${{ github.workspace }}/ccache"
+  CCACHE_SIZE: "50G"
+  JAVA_HOME: "/usr/lib/jvm/java-11-openjdk-amd64"
+
+jobs:
+  build:
+    name: "Build OrangeFox R14"
+    runs-on: "ubuntu-22.04"
+    timeout-minutes: 480
+
+    steps:
+      - name: "Checkout Repository"
+        uses: "actions/checkout@v4"
+        continue-on-error: false
+        with:
+          fetch-depth: 1
+
+      - name: "Install System Dependencies"
+        continue-on-error: false
+        timeout-minutes: 30
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            git-core \
+            gnupg \
+            flex \
+            bison \
+            build-essential \
+            zip \
+            curl \
+            zlib1g-dev \
+            gcc-multilib \
+            g++-multilib \
+            libc6-dev-i386 \
+            lib32ncurses5-dev \
+            x11proto-core-dev \
+            libx11-dev \
+            lib32z1-dev \
+            libgl1-mesa-dev \
+            libxml2-utils \
+            xsltproc \
+            unzip \
+            fontconfig \
+            python3 \
+            python3-pip \
+            libssl-dev \
+            liblz4-tool \
+            rsync \
+            schedtool \
+            squashfs-tools \
+            openjdk-11-jdk \
+            ccache \
+            repo
+
+      - name: "Configure Git Environment"
+        continue-on-error: false
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git config --global color.ui false
+
+      - name: "Setup CCache"
+        continue-on-error: false
+        uses: "actions/cache@v4"
+        with:
+          path: "${{ env.CCACHE_DIR }}"
+          key: "ccache-orangefox-${{ env.DEVICE }}-${{ github.sha }}"
+          restore-keys: |
+            ccache-orangefox-${{ env.DEVICE }}-
+            ccache-orangefox-
+
+      - name: "Initialize OrangeFox R14 Source"
+        continue-on-error: false
+        timeout-minutes: 60
+        run: |
+          mkdir -p ${{ github.workspace }}/orangefox
+          cd ${{ github.workspace }}/orangefox
+          repo init -u ${{ env.MANIFEST }} -b ${{ env.BRANCH }} --depth=1
+
+      - name: "Sync OrangeFox Source Code"
+        continue-on-error: false
+        timeout-minutes: 180
+        run: |
+          cd ${{ github.workspace }}/orangefox
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+
+      - name: "Import OPPO A1 Pro (PHQ110) Device Tree"
+        continue-on-error: false
+        timeout-minutes: 30
+        run: |
+          mkdir -p ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
+          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
+          
+          cat > BoardConfig.mk << 'ENDOFFILE'
+          # BoardConfig.mk for OPPO A1 Pro (PHQ110)
+          
+          # Platform
+          TARGET_BOARD_PLATFORM := bengal
+          TARGET_BOARD_PLATFORM_GPU := qcom-adreno619
+          
+          # Architecture
+          TARGET_ARCH := arm64
+          TARGET_ARCH_VARIANT := armv8-2a
+          TARGET_CPU_ABI := arm64-v8a
+          TARGET_CPU_ABI2 :=
+          TARGET_CPU_VARIANT := cortex-a55
+          
+          TARGET_2ND_ARCH := arm
+          TARGET_2ND_ARCH_VARIANT := armv8-2a
+          TARGET_2ND_CPU_ABI := armeabi-v7a
+          TARGET_2ND_CPU_ABI2 := armeabi
+          TARGET_2ND_CPU_VARIANT := cortex-a55
+          
+          # Bootloader
+          TARGET_BOOTLOADER_BOARD_NAME := bengal
+          TARGET_NO_BOOTLOADER := true
+          
+          # Kernel
+          TARGET_PREBUILT_KERNEL := device/oppo/PHQ110/prebuilt/Image.gz
+          BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket reboot=panic_warm
+          BOARD_KERNEL_BASE := 0x00000000
+          BOARD_KERNEL_PAGESIZE := 4096
+          BOARD_KERNEL_TAGS_OFFSET := 0x01E00000
+          BOARD_RAMDISK_OFFSET := 0x02000000
+          BOARD_DTB_OFFSET := 0x01F00000
+          BOARD_INCLUDE_DTB_IN_BOOTIMG := true
+          
+          # Partition Information (AB Slot Structure)
+          BOARD_BUILD_SYSTEM_ROOT_IMAGE := true
+          BOARD_USES_RECOVERY_AS_BOOT := false
+          BOARD_HAS_REMOVABLE_STORAGE := true
+          BOARD_BOOTIMAGE_PARTITION_SIZE := 100663296
+          BOARD_RECOVERYIMAGE_PARTITION_SIZE := 100663296
+          BOARD_CACHEIMAGE_PARTITION_SIZE := 268435456
+          BOARD_CACHEIMAGE_FILE_SYSTEM_TYPE := ext4
+          BOARD_VENDORIMAGE_PARTITION_SIZE := 1610612736
+          BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE := ext4
+          BOARD_PRODUCTIMAGE_PARTITION_SIZE := 2684354560
+          BOARD_PRODUCTIMAGE_FILE_SYSTEM_TYPE := ext4
+          BOARD_SYSTEMIMAGE_PARTITION_SIZE := 4294967296
+          BOARD_SYSTEMIMAGE_FILE_SYSTEM_TYPE := ext4
+          BOARD_USERDATAIMAGE_PARTITION_SIZE := 118111600640
+          BOARD_FLASH_BLOCK_SIZE := 262144
+          
+          # AB Slot Configuration
+          AB_OTA_UPDATER := true
+          AB_OTA_PARTITIONS := \
+            boot \
+            dtbo \
+            system \
+            vendor \
+            product \
+            vbmeta \
+            vbmeta_system
+          
+          # Crypto / Data Decryption
+          TW_INCLUDE_CRYPTO := true
+          TW_INCLUDE_CRYPTO_FBE := true
+          TW_USE_FSCRYPT_POLICY := 2
+          TW_CRYPTO_USE_SYSTEM_VOLD := true
+          TW_CRYPTO_FBE_DECRYPT := true
+          TW_INCLUDE_NTFS_3G := true
+          TW_INCLUDE_FUSE_EXFAT := true
+          
+          # File Systems
+          TARGET_USERIMAGES_USE_EXT4 := true
+          TARGET_USERIMAGES_USE_F2FS := true
+          
+          # TWRP Configuration
+          TW_THEME := portrait_hdpi
+          TW_DEVICE_VERSION := R14
+          TW_EXCLUDE_DEFAULT_USB_INIT := true
+          TW_DEFAULT_LANGUAGE := zh_CN
+          TW_BRIGHTNESS_PATH := "/sys/class/backlight/panel0-backlight/brightness"
+          TW_MAX_BRIGHTNESS := 2047
+          TW_DEFAULT_BRIGHTNESS := 1024
+          TW_SCREEN_BLANK_ON_BOOT := true
+          TW_NO_SCREEN_BLANK := true
+          
+          # OPPO Specific
+          TW_INPUT_WAKE_DEVICE := "/dev/input/event1"
+          TW_HAS_DOWNLOAD_MODE := true
+          TW_SUPPORT_USB_MTP := true
+          
+          # Recovery Properties
+          TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
+          TARGET_RECOVERY_FSTAB := device/oppo/PHQ110/recovery.fstab
+          ENDOFFILE
+
+      - name: "Create recovery.fstab for PHQ110"
+        continue-on-error: false
+        run: |
+          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
+          
+          cat > recovery.fstab << 'ENDOFFILE'
+          # recovery.fstab for OPPO A1 Pro (PHQ110)
+          # /boot
+          /boot       emmc    /dev/block/by-name/boot                            flags=slotselect;display="Boot"
+          /dtbo       emmc    /dev/block/by-name/dtbo                            flags=slotselect;display="DTBO"
+          
+          # System Partitions (AB Slot)
+          /system     ext4    /dev/block/by-name/system                          flags=slotselect;display="System";mounttodecrypt
+          /vendor     ext4    /dev/block/by-name/vendor                          flags=slotselect;display="Vendor";mounttodecrypt
+          /product    ext4    /dev/block/by-name/product                         flags=slotselect;display="Product";mounttodecrypt
+          
+          # Data Partition
+          /data       ext4    /dev/block/by-name/userdata                        flags=encryptable=footer;length=-16384;display="Data"
+          
+          # Cache Partition
+          /cache      ext4    /dev/block/by-name/cache                           flags=display="Cache"
+          
+          # Metadata
+          /metadata   ext4    /dev/block/by-name/metadata                        flags=display="Metadata"
+          
+          # VBMeta
+          /vbmeta     emmc    /dev/block/by-name/vbmeta                          flags=slotselect;display="VBMeta"
+          /vbmeta_system emmc /dev/block/by-name/vbmeta_system                   flags=slotselect;display="VBMeta System"
+          
+          # External Storage
+          /sdcard     vfat    /dev/block/mmcblk1p1                               flags=display="SD Card";storage;removable
+          /usb_otg    vfat    /dev/block/sda1                                    flags=display="USB OTG";storage;removable
+          
+          # Persist
+          /persist    ext4    /dev/block/by-name/persist                         flags=display="Persist"
+          
+          # Misc
+          /misc       emmc    /dev/block/by-name/misc                            flags=display="Misc"
+          ENDOFFILE
+
+      - name: "Create Device Makefile"
+        continue-on-error: false
+        run: |
+          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
+          
+          cat > twrp_${{ env.DEVICE }}.mk << 'ENDOFFILE'
+          #
+          # Copyright (C) 2024 OrangeFox Recovery Project
+          #
+          # Licensed under the Apache License, Version 2.0 (the "License");
+          # you may not use this file except in compliance with the License.
+          # You may obtain a copy of the License at
+          #
+          # http://www.apache.org/licenses/LICENSE-2.0
+          #
+          # Unless required by applicable law or agreed to in writing, software
+          # distributed under the License is distributed on an "AS IS" BASIS,
+          # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+          # See the License for the specific language governing permissions and
+          # limitations under the License.
+          
+          # Inherit from those products. Most specific first.
+          $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
+          $(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_base.mk)
+          $(call inherit-product, $(SRC_TARGET_DIR)/product/embedded.mk)
+          
+          # Inherit from OrangeFox common configuration
+          $(call inherit-product, vendor/twrp/config/common.mk)
+          
+          # Device identifier. This must come after all inclusions
+          PRODUCT_DEVICE := PHQ110
+          PRODUCT_NAME := twrp_PHQ110
+          PRODUCT_BRAND := OPPO
+          PRODUCT_MODEL := OPPO A1 Pro 5G
+          PRODUCT_MANUFACTURER := OPPO
+          
+          # OrangeFox Specific
+          PRODUCT_PROPERTY_OVERRIDES += \
+              ro.orangefox.version=R14 \
+              ro.orangefox.device=PHQ110 \
+              ro.orangefox.maintainer=OrangeFox Builder
+          ENDOFFILE
+
+      - name: "Create vendorsetup.sh"
+        continue-on-error: false
+        run: |
+          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
+          
+          cat > vendorsetup.sh << 'ENDOFFILE'
+          #
+          # Copyright (C) 2024 OrangeFox Recovery Project
+          #
+          # Licensed under the Apache License, Version 2.0 (the "License");
+          # you may not use this file except in compliance with the License.
+          # You may obtain a copy of the License at
+          #
+          # http://www.apache.org/licenses/LICENSE-2.0
+          #
+          # Unless required by applicable law or agreed to in writing, software
+          # distributed under the License is distributed on an "AS IS" BASIS,
+          # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+          # See the License for the specific language governing permissions and
+          # limitations under the License.
+          
+          add_lunch_combo twrp_PHQ110-eng
+          ENDOFFILE
+
+      - name: "Create Kernel Prebuilt Directory Structure"
+        continue-on-error: false
+        run: |
+          mkdir -p ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt
+          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt
+          
+          cat > README.md << 'ENDOFFILE'
+          # Kernel Prebuilt Directory
+          
+          Please place your prebuilt kernel Image.gz here.
+          
+          File name: Image.gz
+          
+          You can extract the kernel from stock boot.img using:
+          - magiskboot unpack boot.img
+          - Or use Android Image Kitchen
+          ENDOFFILE
+
+      - name: "Configure Build Environment"
+        continue-on-error: false
+        run: |
+          export USE_CCACHE=1
+          export CCACHE_DIR=${{ env.CCACHE_DIR }}
+          ccache -M ${{ env.CCACHE_SIZE }}
+          ccache -z
+          
+          export JAVA_HOME=${{ env.JAVA_HOME }}
+          export PATH=$JAVA_HOME/bin:$PATH
+          
+          java -version
+          
+          echo "DEVICE: ${{ env.DEVICE }}"
+          echo "BRANCH: ${{ env.BRANCH }}"
+          echo "BUILD_TARGET: ${{ env.BUILD_TARGET }}"
+
+      - name: "Execute OrangeFox Compilation"
+        continue-on-error: false
+        timeout-minutes: 180
+        run: |
+          cd ${{ github.workspace }}/orangefox
+          
+          source build/envsetup.sh
+          
+          lunch twrp_${{ env.DEVICE }}-eng
+          
+          mka ${{ env.BUILD_TARGET }} -j$(nproc --all)
+
+      - name: "Prepare Build Artifacts"
+        continue-on-error: false
+        if: success()
+        run: |
+          mkdir -p ${{ github.workspace }}/artifacts
+          
+          RECOVERY_IMG=$(find ${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }} -name "recovery.img" -type f | head -1)
+          
+          if [ -f "$RECOVERY_IMG" ]; then
+              cp "$RECOVERY_IMG" ${{ github.workspace }}/artifacts/OrangeFox-R14-${{ env.DEVICE }}.img
+              
+              cd ${{ github.workspace }}/artifacts
+              md5sum OrangeFox-R14-${{ env.DEVICE }}.img > OrangeFox-R14-${{ env.DEVICE }}.img.md5
+              
+              cat > build_info.txt << EOF
+          OrangeFox R14 Recovery Build Information
+          =======================================
+          Device: ${{ env.DEVICE_NAME }} (${{ env.DEVICE }})
+          Version: R14
+          Branch: ${{ env.BRANCH }}
+          Build Date: $(date -u)
+          Build System: GitHub Actions
+          MD5: $(md5sum OrangeFox-R14-${{ env.DEVICE }}.img | awk '{print $1}')
+          EOF
+          else
+              echo "Recovery image not found!"
+              exit 1
+          fi
+
+      - name: "Upload Build Artifacts"
+        uses: "actions/upload-artifact@v4"
+        continue-on-error: false
+        if: success()
+        with:
+          name: "OrangeFox-R14-${{ env.DEVICE }}"
+          path: |
+            ${{ github.workspace }}/artifacts/*
+          retention-days: 30
+
+      - name: "Error Log Collection"
+        continue-on-error: false
+        if: failure()
+        run: |
+          echo "========================================"
+          echo "Build failed! Collecting error logs..."
+          echo "========================================"
+          
+          if [ -d "${{ github.workspace }}/orangefox/out" ]; then
+              echo "Last 100 lines of build log:"
+              tail -100 ${{ github.workspace }}/orangefox/out/verbose.log 2>/dev/null || echo "No verbose.log found"
+              
+              echo ""
+              echo "Last 100 lines of error log:"
+              tail -100 ${{ github.workspace }}/orangefox/out/error.log 2>/dev/null || echo "No error.log found"
+          fi
+          
+          echo ""
+          echo "Disk usage:"
+          df -h
+          
+          echo ""
+          echo "Memory usage:"
+          free -h
+          
+          exit 1
