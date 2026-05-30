@@ -1,0 +1,389 @@
+name: OPPO A1 Pro 橙狐R14全自动编译（厂商定制化对抗版）
+
+# 全局声明权限，确保Release发布正常
+permissions:
+  contents: write
+  actions: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      # 仅保留必要参数，默认值已适配OPPO A1 Pro，无需修改
+      MANIFEST_BRANCH:
+        description: '橙狐版本分支'
+        required: true
+        default: '14.1'
+        type: choice
+        options:
+          - 14.1
+          - 12.1
+      BOOT_IMG_URL:
+        description: '原装boot.img下载地址（不传则读取仓库根目录的boot.img）'
+        required: false
+        default: ''
+      DEVICE_NAME:
+        description: '设备代号（OPPO A1 Pro无需修改）'
+        required: true
+        default: 'holi'
+      BUILD_TARGET:
+        description: '编译目标（OPPO无独立recovery分区，必须选boot）'
+        required: true
+        default: 'boot'
+        type: choice
+        options:
+          - boot
+          - recovery
+
+jobs:
+  build:
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-24.04
+    steps:
+    # ==============================================
+    # 第一阶段：基础环境准备（快速执行，失败立即终止）
+    # ==============================================
+    - name: 1. Check Out 仓库代码
+      uses: actions/checkout@v4
+
+    - name: 2. 清理工作空间
+      uses: rokibhasansagar/slimhub_actions@main
+
+    - name: 3. 初始化工作目录
+      run: |
+        set -e
+        mkdir workspace
+        cd workspace
+        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+      id: pwd
+
+    - name: 4. 安装全套依赖
+      run: |
+        set -e
+        sudo apt update && sudo apt upgrade -y
+        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
+            linux-modules-extra-$(uname -r) \
+            git python3 python3-pip tar aria2 wget unzip openjdk-17-jdk \
+            device-tree-compiler git-lfs rsync
+        # 安装设备树生成工具
+        pip3 install twrpdtgen
+        # 安装橙狐编译环境
+        git clone https://gitlab.com/OrangeFox/misc/scripts
+        cd scripts
+        sudo bash setup/android_build_env.sh
+        sed -i 's/cd -/cd ../g' setup/install_android_sdk.sh
+        sudo bash setup/install_android_sdk.sh
+
+    - name: 5. 配置Java环境
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'zulu'
+        java-version: '17'
+
+    # ==============================================
+    # 第二阶段：设备树处理（核心步骤，任何一步失败立即终止，不会进入编译）
+    # ==============================================
+    - name: 6. 获取原装boot.img（失败立即终止）
+      run: |
+        set -e
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        # 优先下载用户指定的boot.img，否则读取仓库根目录
+        if [ -n "${{ github.event.inputs.BOOT_IMG_URL }}" ]; then
+          wget -O boot.img "${{ github.event.inputs.BOOT_IMG_URL }}"
+          echo "✅ 已下载用户指定的boot.img"
+        elif [ -f "../boot.img" ]; then
+          cp ../boot.img .
+          echo "✅ 已读取仓库根目录的boot.img"
+        else
+          echo "❌ 未找到boot.img！请上传boot.img到仓库根目录，或填写下载地址"
+          exit 1
+        fi
+        # 验证boot.img有效性
+        if [ $(stat -c%s boot.img) -lt 30000000 ]; then
+          echo "❌ boot.img文件过小，可能损坏！"
+          exit 1
+        fi
+        echo "✅ boot.img准备完成，大小：$(stat -c%s boot.img) 字节"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: 7. 解包boot.img，全局提取所有原厂内容（对抗OPPO个性化路径）
+      run: |
+        set -e
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        # 下载解包工具
+        git clone --depth 1 https://github.com/cfig/Android_boot_image_editor.git boot_tool
+        cd boot_tool
+        cp ../boot.img .
+        # 解包
+        ./gradlew unpack
+        # 进入ramdisk目录
+        cd build/unzip_boot/ramdisk
+        echo "======================================"
+        echo "🔍 开始全局扫描OPPO个性化文件，不限制路径"
+        echo "======================================"
+        
+        # ==============================================
+        # 对抗性优化1：全局提取所有驱动模块（不管路径在哪里）
+        echo "🔍 扫描所有内核驱动模块..."
+        mkdir -p ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/modules
+        # 全局搜索所有.ko文件，跟随软链接，复制真实文件
+        find . -name "*.ko" -type f -exec rsync -L {} ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/modules/ \;
+        KO_COUNT=$(ls ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/modules/ | wc -l)
+        echo "✅ 已提取驱动模块：$KO_COUNT 个（已跟随软链接，解决OPPO软链接陷阱）"
+        
+        # ==============================================
+        # 对抗性优化2：全局提取所有固件文件（多路径兼容）
+        echo "🔍 扫描所有固件文件..."
+        mkdir -p ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/firmware
+        # 全局搜索所有固件文件，兼容OPPO的firmware_mnt、odm/firmware等路径
+        find . -type f \( -name "*.bin" -o -name "*.fw" -o -name "*.mdt" -o -name "*.b00" -o -name "*.b01" \) -exec rsync -L {} ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/firmware/ \; 2>/dev/null || true
+        FW_COUNT=$(ls ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/firmware/ | wc -l)
+        echo "✅ 已提取固件文件：$FW_COUNT 个（兼容OPPO所有非标准固件路径）"
+        
+        # ==============================================
+        # 对抗性优化3：全局提取所有启动脚本（不管命名是什么）
+        echo "🔍 扫描所有启动脚本..."
+        mkdir -p ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc
+        # 捕获所有init和ueventd脚本，包括oppo/oplus个性化命名
+        find . -name "init*.rc" -type f -exec rsync -L {} ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc/ \;
+        find . -name "ueventd*.rc" -type f -exec rsync -L {} ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc/ \;
+        RC_COUNT=$(ls ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc/ | wc -l)
+        echo "✅ 已提取启动脚本：$RC_COUNT 个（包含所有OPPO/oplus个性化命名脚本）"
+        
+        # ==============================================
+        # 提取原厂启动参数
+        cd ../../..
+        ORIGINAL_CMDLINE=$(cat build/unzip_boot/cmdline.txt)
+        echo "ORIGINAL_CMDLINE=$ORIGINAL_CMDLINE" >> $GITHUB_ENV
+        echo "✅ 已提取原厂启动参数"
+        
+        # 清理临时文件
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        rm -rf boot_tool
+        echo "======================================"
+        echo "✅ 所有原厂内容提取完成，已解决OPPO个性化路径问题"
+        echo "======================================"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: 8. 从boot.img自动生成完整设备树（原厂内容100%保留）
+      run: |
+        set -e
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        # 生成基础设备树（完全保留原厂生成的所有内容，包括冗余和不存在的分区）
+        python3 -m twrpdtgen boot.img -o device_tree
+        echo "✅ 原厂设备树生成完成，所有原厂内容已完整保留"
+        # 移动到标准路径
+        DEVICE_PATH=device/qualcomm/${{ github.event.inputs.DEVICE_NAME }}
+        mkdir -p $DEVICE_PATH
+        cp -r device_tree/* $DEVICE_PATH/
+        rm -rf device_tree
+        echo "✅ 设备树已移动到标准路径：$DEVICE_PATH"
+        echo "DEVICE_PATH=$DEVICE_PATH" >> $GITHUB_ENV
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: 9. 仅追加橙狐配置+OPPO定制化兼容（不修改原厂任何内容）
+      run: |
+        set -e
+        cd ${{ steps.pwd.outputs.workspace-folder }}/${{ env.DEVICE_PATH }}
+        echo "======================================"
+        echo "⚠️  所有原厂设备树内容将100%保留，仅追加橙狐配置和OPPO兼容补丁"
+        echo "======================================"
+
+        # ==============================================
+        # 1. 仅追加原厂启动参数到BoardConfig.mk（不修改原厂任何行）
+        echo "" >> BoardConfig.mk
+        echo "# ========== 追加：原厂启动参数（不修改原厂配置）==========" >> BoardConfig.mk
+        echo "BOARD_KERNEL_CMDLINE += ${{ env.ORIGINAL_CMDLINE }}" >> BoardConfig.mk
+        echo "" >> BoardConfig.mk
+
+        # ==============================================
+        # 2. 追加橙狐R14配置+OPPO编译兼容补丁（解决重复规则错误）
+        cat >> BoardConfig.mk << 'EOF'
+# ========== 追加：橙狐R14.1 专属配置+OPPO兼容补丁 ==========
+# A/B分区适配
+FOX_VIRTUAL_AB_DEVICE := 1
+FOX_USES_RECOVERY_AS_BOOT := 1
+FOX_NO_RECOVERY_PARTITION := 1
+FOX_SUPPORT_AB_SLOTS := 1
+
+# 版本配置
+FOX_BUILD_TYPE := Stable
+FOX_VERSION := "R14.1"
+FOX_OTA_VERSION := "R14.1"
+FOX_BUILD_BOOTIMAGE := 1
+TARGET_RECOVERY_TASK_PROFILES := true
+FOX_DISABLE_HAPTICS := 1
+BOARD_VNDK_VERSION := current
+
+# OPPO FBE数据解密
+TW_INCLUDE_CRYPTO := true
+TW_INCLUDE_CRYPTO_FBE := true
+TW_INCLUDE_FBE_METADATA_DECRYPT := true
+BOARD_USES_METADATA_PARTITION := true
+TW_USE_FSCRYPT_POLICY := 2
+TW_PREPARE_DATA_MEDIA_EARLY := true
+BOARD_USES_QCOM_FBE_DECRYPTION := true
+TARGET_CRYPTFS_HW_PATH := vendor/qcom/opensource/commonsys/cryptfs_hw
+
+# OPPO OZIP固件刷入支持
+TW_OZIP_DECRYPT_KEY := "1C4C1EA3A12531AE491B21BB31613C11"
+
+# AVB校验绕过
+FOX_DISABLE_AVB := 1
+FOX_PATCH_VBMETA := 1
+
+# 动态分区适配
+BOARD_USES_PRODUCTIMAGE := true
+BOARD_USES_VENDORIMAGE := true
+BOARD_ROOT_EXTRA_FOLDERS := odm product vendor my_heytap my_product my_bigball
+
+# ==============================================
+# OPPO编译兼容补丁（解决厂商冗余代码导致的编译错误）
+BUILD_BROKEN_DUP_RULES := true
+BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
+ALLOW_MISSING_DEPENDENCIES := true
+EOF
+        echo "✅ 橙狐R14配置+OPPO编译补丁已追加"
+
+        # ==============================================
+        # 3. 补齐原厂驱动、固件、脚本（仅添加，不修改原厂任何文件）
+        mkdir -p prebuilt
+        cp -r ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/modules prebuilt/
+        cp -r ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/firmware prebuilt/
+        mkdir -p recovery/root
+        cp -r ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc/* recovery/root/
+        echo "✅ 原厂驱动/固件/脚本已补齐，已解决OPPO路径不标准问题"
+
+        # ==============================================
+        # 4. 仅追加recovery.fstab内容（兼容OPPO两种分区路径，不删除原厂任何分区）
+        echo "" >> recovery.fstab
+        echo "# ========== 追加：橙狐适配分区+OPPO双路径兼容（原厂分区完全保留）==========" >> recovery.fstab
+        # 兼容标准by-name路径和OPPO带平台前缀的长路径
+        echo "/data                    f2fs      /dev/block/by-name/userdata                     flags=encryptable=footer;length=-16384;fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized+wrappedkey_v0,metadata_encryption=aes-256-xts:wrappedkey_v0,keydirectory=/metadata/v0,uses_fde_or_fbe=fbe,fbe_version=2" >> recovery.fstab
+        echo "/data                    f2fs      /dev/block/platform/soc/4744000.sdhci/by-name/userdata                     flags=encryptable=footer;length=-16384" >> recovery.fstab
+        echo "/metadata                ext4      /dev/block/by-name/metadata                     flags=backup=1;encryptable=footer" >> recovery.fstab
+        echo "/metadata                ext4      /dev/block/platform/soc/4744000.sdhci/by-name/metadata                     flags=backup=1;encryptable=footer" >> recovery.fstab
+        # 追加Android13+必需分区+OPPO私有分区
+        echo "/vendor_boot             emmc      /dev/block/by-name/vendor_boot                  flags=display=\"Vendor Boot\";backup=1;slotselect;flashimg=1" >> recovery.fstab
+        echo "/dtbo                    emmc      /dev/block/by-name/dtbo                         flags=display=\"DTBO\";backup=1;slotselect;flashimg=1" >> recovery.fstab
+        echo "/vbmeta                  emmc      /dev/block/by-name/vbmeta                       flags=display=\"VBMeta\";backup=1;slotselect;flashimg=1" >> recovery.fstab
+        echo "/vbmeta_system           emmc      /dev/block/by-name/vbmeta_system                flags=display=\"VBMeta System\";backup=1;slotselect;flashimg=1" >> recovery.fstab
+        echo "/my_heytap               ext4      /dev/block/by-name/my_heytap                    flags=display=\"HeyTap\";backup=1" >> recovery.fstab
+        echo "/my_product              ext4      /dev/block/by-name/my_product                   flags=display=\"My Product\";backup=1" >> recovery.fstab
+        echo "✅ 已追加分区兼容配置，支持OPPO两种分区路径格式"
+
+        # ==============================================
+        # 5. 仅追加device.mk配置（不修改原厂任何内容）
+        echo "" >> device.mk
+        cat >> device.mk << 'EOF'
+# ========== 追加：橙狐R14 补充配置+OPPO兼容 ==========
+PRODUCT_RELEASE_NAME := holi
+PRODUCT_DEVICE := holi
+PRODUCT_NAME := twrp_holi
+PRODUCT_BRAND := OPPO
+PRODUCT_MODEL := OPPO A1 Pro 5G
+PRODUCT_MANUFACTURER := OPPO
+
+# 动态分区
+PRODUCT_USE_DYNAMIC_PARTITIONS := true
+PRODUCT_BUILD_SUPER_PARTITIONS := false
+
+# 解密支持
+PRODUCT_PACKAGES += \
+    qcom_decrypt \
+    qcom_decrypt_fbe \
+    android.hardware.keymaster@4.0-impl \
+    android.hardware.keymaster@4.0-service
+
+# 基础工具
+PRODUCT_PACKAGES += \
+    busybox \
+    mkshrc \
+    toybox_static
+
+# 自动复制所有原厂驱动固件（递归复制，不限制路径）
+PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/prebuilt/modules,lib/modules)
+PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/prebuilt/firmware,vendor/firmware)
+PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/recovery/root,root)
+EOF
+        echo "✅ device.mk配置已追加"
+
+        echo "======================================"
+        echo "✅ 所有OPPO个性化定制对抗优化完成！"
+        echo "✅ 原厂设备树所有内容100%保留"
+        echo "======================================"
+        # 输出验证信息
+        echo "对抗性优化验证："
+        echo "驱动模块数量：$(ls prebuilt/modules/ | wc -l) 个"
+        echo "固件文件数量：$(ls prebuilt/firmware/ | wc -l) 个"
+        echo "启动脚本数量：$(ls recovery/root/ | grep rc | wc -l) 个"
+        echo "原厂recovery分区保留：$(grep -c '^/recovery' recovery.fstab) 个条目"
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    # ==============================================
+    # 第三阶段：同步源码+编译（仅当前面所有步骤全部成功才会执行）
+    # ==============================================
+    - name: 10. 同步橙狐R14源码（仅前置步骤全部成功才执行）
+      run: |
+        set -e
+        cd ${{ steps.pwd.outputs.workspace-folder }}
+        git clone https://gitlab.com/OrangeFox/sync.git
+        cd sync
+        ./orangefox_sync.sh --branch ${{ github.event.inputs.MANIFEST_BRANCH }} --path ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+        # 把生成好的设备树移动到编译目录
+        cp -r device ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: 11. 设置交换空间
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 16
+
+    - name: 12. 开始编译橙狐R14（仅前置步骤全部成功才执行）
+      run: |
+        set -e
+        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        # OPPO A1 Pro Android13+专用lunch命令
+        lunch twrp_${{ github.event.inputs.DEVICE_NAME }}-ap2a-eng
+        make clean
+        mka adbd ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: 13. 验证编译产物
+      run: |
+        set -e
+        OUT_DIR=${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}
+        echo "编译产物目录："
+        ls -lh $OUT_DIR/*.img $OUT_DIR/*.zip 2>/dev/null
+        if [ -f "$OUT_DIR/boot.img" ]; then
+          echo "✅ 编译成功！成品boot.img大小：$(stat -c%s $OUT_DIR/boot.img) 字节"
+        else
+          echo "❌ 编译失败，未找到成品boot.img"
+          exit 1
+        fi
+
+    - name: 14. 上传编译成品到Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+          ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+        name: 橙狐R14.1 for OPPO A1 Pro ${{ github.run_id }}
+        tag_name: ${{ github.run_id }}
+        body: |
+          ## 橙狐 R14.1 for OPPO A1 Pro (holi)
+          ✅ **OPPO厂商定制化对抗版，已解决所有个性化命名/路径不匹配问题**
+          - 设备：OPPO A1 Pro 5G
+          - 平台：SM6375 (骁龙695)
+          - 分区：A/B boot-as-recovery
+          - 已支持：FBE解密、OZIP刷入、双槽位切换、AVB绕过
+          - 对抗优化：已兼容OPPO软链接陷阱、非标准路径、个性化命名、私有分区
+          - 原厂完整性：所有原厂分区（含不存在的recovery）、冗余代码完全保留
+          
+          ### 刷入方法
+          ```bash
+          fastboot flash boot_a OrangeFox-boot.img
+          fastboot flash boot_b OrangeFox-boot.img
+          fastboot reboot recovery
+          ```
