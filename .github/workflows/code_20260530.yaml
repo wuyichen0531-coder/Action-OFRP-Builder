@@ -122,9 +122,9 @@ jobs:
           echo "提取启动脚本：$RC_COUNT 个"
           
           cd ../../..
-          ORIGINAL_CMDLINE=$(cat build/unzip_boot/cmdline.txt)
-          echo "ORIGINAL_CMDLINE=$ORIGINAL_CMDLINE" >> $GITHUB_ENV
-          echo "提取原厂启动参数完成"
+          # 修复：把cmdline写入临时文件，避免特殊字符冲突
+          cat build/unzip_boot/cmdline.txt > "$WS/cmdline.txt"
+          echo "✅ 原厂启动参数已保存到临时文件"
           
           cd "$WS"
           rm -rf boot_tool
@@ -144,18 +144,18 @@ jobs:
           echo "DEVICE_PATH=$DEVICE_PATH" >> $GITHUB_ENV
           echo "设备树生成完成，路径：$DEVICE_PATH"
 
-      - name: 9. 追加橙狐配置+OPPO兼容
+      - name: 9. 追加橙狐配置+OPPO兼容（修复第163行特殊字符错误）
         run: |
           set -e
           WS="${{ steps.pwd.outputs.workspace-folder }}"
           DEVICE_PATH="${{ env.DEVICE_PATH }}"
-          CMDLINE="${{ env.ORIGINAL_CMDLINE }}"
           cd "$WS/$DEVICE_PATH"
           echo "开始追加配置，不修改任何原厂内容"
 
+          # 修复：从临时文件读取cmdline，避免特殊字符冲突
           echo "" >> BoardConfig.mk
           echo "# 原厂启动参数" >> BoardConfig.mk
-          echo "BOARD_KERNEL_CMDLINE += $CMDLINE" >> BoardConfig.mk
+          echo "BOARD_KERNEL_CMDLINE += $(cat $WS/cmdline.txt)" >> BoardConfig.mk
           echo "" >> BoardConfig.mk
 
           cat >> BoardConfig.mk << 'ENDOFCFG'
