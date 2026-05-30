@@ -1,6 +1,5 @@
-name: OPPO A1 Pro 橙狐R14全自动编译（厂商定制化对抗版）
+name: OPPO A1 Pro 橙狐R14全自动编译（最终稳定版）
 
-# 全局声明权限，确保Release发布正常
 permissions:
   contents: write
   actions: read
@@ -14,8 +13,8 @@ on:
         default: '14.1'
         type: choice
         options:
-          - 14.1
-          - 12.1
+          - '14.1'
+          - '12.1'
       BOOT_IMG_URL:
         description: '原装boot.img下载地址（不传则读取仓库根目录的boot.img）'
         required: false
@@ -25,150 +24,147 @@ on:
         required: true
         default: 'holi'
       BUILD_TARGET:
-        description: '编译目标（OPPO无独立recovery分区，必须选boot）'
+        description: '编译目标（必须选boot）'
         required: true
         default: 'boot'
         type: choice
         options:
-          - boot
-          - recovery
+          - 'boot'
+          - 'recovery'
 
 jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-24.04
     steps:
-    - name: 1. Check Out 仓库代码
-      uses: actions/checkout@v4
+      - name: 1. Check Out 仓库代码
+        uses: actions/checkout@v4
 
-    - name: 2. 清理工作空间
-      uses: rokibhasansagar/slimhub_actions@main
+      - name: 2. 清理工作空间
+        uses: rokibhasansagar/slimhub_actions@main
 
-    - name: 3. 初始化工作目录
-      run: |
-        set -e
-        mkdir workspace
-        cd workspace
-        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
-      id: pwd
+      - name: 3. 初始化工作目录
+        id: pwd
+        run: |
+          set -e
+          mkdir workspace
+          cd workspace
+          echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
 
-    - name: 4. 安装全套依赖
-      run: |
-        set -e
-        sudo apt update && sudo apt upgrade -y
-        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            git python3 python3-pip tar aria2 wget unzip openjdk-17-jdk \
-            device-tree-compiler git-lfs rsync
-        pip3 install twrpdtgen
-        git clone https://gitlab.com/OrangeFox/misc/scripts
-        cd scripts
-        sudo bash setup/android_build_env.sh
-        sed -i 's/cd -/cd ../g' setup/install_android_sdk.sh
-        sudo bash setup/install_android_sdk.sh
+      - name: 4. 安装全套依赖
+        run: |
+          set -e
+          sudo apt update && sudo apt upgrade -y
+          DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
+              linux-modules-extra-$(uname -r) \
+              git python3 python3-pip tar aria2 wget unzip openjdk-17-jdk \
+              device-tree-compiler git-lfs rsync
+          pip3 install twrpdtgen
+          git clone https://gitlab.com/OrangeFox/misc/scripts
+          cd scripts
+          sudo bash setup/android_build_env.sh
+          sed -i 's/cd -/cd ../g' setup/install_android_sdk.sh
+          sudo bash setup/install_android_sdk.sh
 
-    - name: 5. 配置Java环境
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'zulu'
-        java-version: '17'
+      - name: 5. 配置Java环境
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
 
-    - name: 6. 获取原装boot.img
-      run: |
-        set -e
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        if [ -n "${{ github.event.inputs.BOOT_IMG_URL }}" ]; then
-          wget -O boot.img "${{ github.event.inputs.BOOT_IMG_URL }}"
-          echo "✅ 已下载用户指定的boot.img"
-        elif [ -f "../boot.img" ]; then
+      - name: 6. 获取原装boot.img
+        run: |
+          set -e
+          WS="${{ steps.pwd.outputs.workspace-folder }}"
+          cd "$WS"
+          BOOT_URL="${{ github.event.inputs.BOOT_IMG_URL }}"
+          if [ -n "$BOOT_URL" ]; then
+            wget -O boot.img "$BOOT_URL"
+            echo "✅ 已下载用户指定的boot.img"
+          elif [ -f "../boot.img" ]; then
+            cp ../boot.img .
+            echo "✅ 已读取仓库根目录的boot.img"
+          else
+            echo "❌ 未找到boot.img！请上传boot.img到仓库根目录"
+            exit 1
+          fi
+          SIZE=$(stat -c%s boot.img)
+          if [ "$SIZE" -lt 30000000 ]; then
+            echo "❌ boot.img文件过小，可能损坏"
+            exit 1
+          fi
+          echo "✅ boot.img准备完成，大小：$SIZE 字节"
+
+      - name: 7. 解包boot.img，提取原厂内容
+        run: |
+          set -e
+          WS="${{ steps.pwd.outputs.workspace-folder }}"
+          cd "$WS"
+          git clone --depth 1 https://github.com/cfig/Android_boot_image_editor.git boot_tool
+          cd boot_tool
           cp ../boot.img .
-          echo "✅ 已读取仓库根目录的boot.img"
-        else
-          echo "❌ 未找到boot.img！请上传boot.img到仓库根目录，或填写下载地址"
-          exit 1
-        fi
-        if [ $(stat -c%s boot.img) -lt 30000000 ]; then
-          echo "❌ boot.img文件过小，可能损坏！"
-          exit 1
-        fi
-        echo "✅ boot.img准备完成，大小：$(stat -c%s boot.img) 字节"
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+          ./gradlew unpack
+          cd build/unzip_boot/ramdisk
+          
+          echo "🔍 开始提取原厂内容"
+          mkdir -p "$WS/prebuilt/modules"
+          find . -name "*.ko" -type f -exec rsync -L {} "$WS/prebuilt/modules/" \;
+          KO_COUNT=$(ls "$WS/prebuilt/modules/" | wc -l)
+          echo "✅ 驱动模块：$KO_COUNT 个"
+          
+          mkdir -p "$WS/prebuilt/firmware"
+          find . -type f \( -name "*.bin" -o -name "*.fw" -o -name "*.mdt" \) -exec rsync -L {} "$WS/prebuilt/firmware/" \; 2>/dev/null || true
+          FW_COUNT=$(ls "$WS/prebuilt/firmware/" | wc -l)
+          echo "✅ 固件文件：$FW_COUNT 个"
+          
+          mkdir -p "$WS/prebuilt/rc"
+          find . -name "init*.rc" -type f -exec rsync -L {} "$WS/prebuilt/rc/" \;
+          find . -name "ueventd*.rc" -type f -exec rsync -L {} "$WS/prebuilt/rc/" \;
+          RC_COUNT=$(ls "$WS/prebuilt/rc/" | wc -l)
+          echo "✅ 启动脚本：$RC_COUNT 个"
+          
+          cd ../../..
+          ORIGINAL_CMDLINE=$(cat build/unzip_boot/cmdline.txt)
+          echo "ORIGINAL_CMDLINE=$ORIGINAL_CMDLINE" >> $GITHUB_ENV
+          echo "✅ 启动参数提取完成"
+          
+          cd "$WS"
+          rm -rf boot_tool
+          echo "✅ 所有原厂内容提取完成"
 
-    - name: 7. 解包boot.img，全局提取所有原厂内容
-      run: |
-        set -e
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        git clone --depth 1 https://github.com/cfig/Android_boot_image_editor.git boot_tool
-        cd boot_tool
-        cp ../boot.img .
-        ./gradlew unpack
-        cd build/unzip_boot/ramdisk
-        echo "======================================"
-        echo "🔍 开始全局扫描OPPO个性化文件"
-        echo "======================================"
-        
-        mkdir -p ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/modules
-        find . -name "*.ko" -type f -exec rsync -L {} ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/modules/ \;
-        KO_COUNT=$(ls ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/modules/ | wc -l)
-        echo "✅ 已提取驱动模块：$KO_COUNT 个"
-        
-        mkdir -p ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/firmware
-        find . -type f \( -name "*.bin" -o -name "*.fw" -o -name "*.mdt" -o -name "*.b00" -o -name "*.b01" \) -exec rsync -L {} ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/firmware/ \; 2>/dev/null || true
-        FW_COUNT=$(ls ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/firmware/ | wc -l)
-        echo "✅ 已提取固件文件：$FW_COUNT 个"
-        
-        mkdir -p ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc
-        find . -name "init*.rc" -type f -exec rsync -L {} ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc/ \;
-        find . -name "ueventd*.rc" -type f -exec rsync -L {} ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc/ \;
-        RC_COUNT=$(ls ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc/ | wc -l)
-        echo "✅ 已提取启动脚本：$RC_COUNT 个"
-        
-        cd ../../..
-        ORIGINAL_CMDLINE=$(cat build/unzip_boot/cmdline.txt)
-        echo "ORIGINAL_CMDLINE=$ORIGINAL_CMDLINE" >> $GITHUB_ENV
-        echo "✅ 已提取原厂启动参数"
-        
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        rm -rf boot_tool
-        echo "======================================"
-        echo "✅ 所有原厂内容提取完成"
-        echo "======================================"
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      - name: 8. 自动生成设备树
+        run: |
+          set -e
+          WS="${{ steps.pwd.outputs.workspace-folder }}"
+          DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
+          cd "$WS"
+          python3 -m twrpdtgen boot.img -o device_tree
+          DEVICE_PATH="device/qualcomm/$DEVICE"
+          mkdir -p "$DEVICE_PATH"
+          cp -r device_tree/* "$DEVICE_PATH/"
+          rm -rf device_tree
+          echo "DEVICE_PATH=$DEVICE_PATH" >> $GITHUB_ENV
+          echo "✅ 设备树生成完成，路径：$DEVICE_PATH"
 
-    - name: 8. 从boot.img自动生成完整设备树
-      run: |
-        set -e
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        python3 -m twrpdtgen boot.img -o device_tree
-        echo "✅ 原厂设备树生成完成"
-        DEVICE_PATH=device/qualcomm/${{ github.event.inputs.DEVICE_NAME }}
-        mkdir -p $DEVICE_PATH
-        cp -r device_tree/* $DEVICE_PATH/
-        rm -rf device_tree
-        echo "✅ 设备树已移动到标准路径：$DEVICE_PATH"
-        echo "DEVICE_PATH=$DEVICE_PATH" >> $GITHUB_ENV
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      - name: 9. 追加橙狐配置+OPPO兼容
+        run: |
+          set -e
+          WS="${{ steps.pwd.outputs.workspace-folder }}"
+          DEVICE_PATH="${{ env.DEVICE_PATH }}"
+          cd "$WS/$DEVICE_PATH"
+          echo "⚠️  仅追加配置，不修改任何原厂内容"
 
-    - name: 9. 追加橙狐配置+OPPO兼容补丁
-      run: |
-        set -e
-        cd ${{ steps.pwd.outputs.workspace-folder }}/${{ env.DEVICE_PATH }}
-        echo "======================================"
-        echo "⚠️  所有原厂设备树内容将100%保留，仅追加配置"
-        echo "======================================"
+          echo "" >> BoardConfig.mk
+          echo "# 原厂启动参数" >> BoardConfig.mk
+          echo "BOARD_KERNEL_CMDLINE += ${{ env.ORIGINAL_CMDLINE }}" >> BoardConfig.mk
+          echo "" >> BoardConfig.mk
 
-        echo "" >> BoardConfig.mk
-        echo "# ========== 追加：原厂启动参数 ==========" >> BoardConfig.mk
-        echo "BOARD_KERNEL_CMDLINE += ${{ env.ORIGINAL_CMDLINE }}" >> BoardConfig.mk
-        echo "" >> BoardConfig.mk
-
-        cat >> BoardConfig.mk << 'ENDOFCONFIG'
-# ========== 追加：橙狐R14.1 专属配置+OPPO兼容补丁 ==========
+          cat >> BoardConfig.mk << 'ENDOFCFG'
+# 橙狐R14配置
 FOX_VIRTUAL_AB_DEVICE := 1
 FOX_USES_RECOVERY_AS_BOOT := 1
 FOX_NO_RECOVERY_PARTITION := 1
 FOX_SUPPORT_AB_SLOTS := 1
-
 FOX_BUILD_TYPE := Stable
 FOX_VERSION := "R14.1"
 FOX_OTA_VERSION := "R14.1"
@@ -177,6 +173,7 @@ TARGET_RECOVERY_TASK_PROFILES := true
 FOX_DISABLE_HAPTICS := 1
 BOARD_VNDK_VERSION := current
 
+# OPPO解密
 TW_INCLUDE_CRYPTO := true
 TW_INCLUDE_CRYPTO_FBE := true
 TW_INCLUDE_FBE_METADATA_DECRYPT := true
@@ -185,46 +182,43 @@ TW_USE_FSCRYPT_POLICY := 2
 TW_PREPARE_DATA_MEDIA_EARLY := true
 BOARD_USES_QCOM_FBE_DECRYPTION := true
 TARGET_CRYPTFS_HW_PATH := vendor/qcom/opensource/commonsys/cryptfs_hw
-
 TW_OZIP_DECRYPT_KEY := "1C4C1EA3A12531AE491B21BB31613C11"
 
+# AVB绕过
 FOX_DISABLE_AVB := 1
 FOX_PATCH_VBMETA := 1
 
+# 动态分区
 BOARD_USES_PRODUCTIMAGE := true
 BOARD_USES_VENDORIMAGE := true
 BOARD_ROOT_EXTRA_FOLDERS := odm product vendor my_heytap my_product my_bigball
 
+# OPPO编译兼容
 BUILD_BROKEN_DUP_RULES := true
 BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
 ALLOW_MISSING_DEPENDENCIES := true
-ENDOFCONFIG
-        echo "✅ 橙狐R14配置+OPPO编译补丁已追加"
+ENDOFCFG
+          echo "✅ BoardConfig.mk配置完成"
 
-        mkdir -p prebuilt
-        cp -r ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/modules prebuilt/
-        cp -r ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/firmware prebuilt/
-        mkdir -p recovery/root
-        cp -r ${{ steps.pwd.outputs.workspace-folder }}/prebuilt/rc/* recovery/root/
-        echo "✅ 原厂驱动/固件/脚本已补齐"
+          mkdir -p prebuilt
+          cp -r "$WS/prebuilt/modules" prebuilt/
+          cp -r "$WS/prebuilt/firmware" prebuilt/
+          mkdir -p recovery/root
+          cp -r "$WS/prebuilt/rc/"* recovery/root/
+          echo "✅ 原厂资源补齐完成"
 
-        echo "" >> recovery.fstab
-        echo "# ========== 追加：橙狐适配分区+OPPO双路径兼容 ==========" >> recovery.fstab
-        echo "/data                    f2fs      /dev/block/by-name/userdata                     flags=encryptable=footer;length=-16384;fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized+wrappedkey_v0,metadata_encryption=aes-256-xts:wrappedkey_v0,keydirectory=/metadata/v0,uses_fde_or_fbe=fbe,fbe_version=2" >> recovery.fstab
-        echo "/data                    f2fs      /dev/block/platform/soc/4744000.sdhci/by-name/userdata                     flags=encryptable=footer;length=-16384" >> recovery.fstab
-        echo "/metadata                ext4      /dev/block/by-name/metadata                     flags=backup=1;encryptable=footer" >> recovery.fstab
-        echo "/metadata                ext4      /dev/block/platform/soc/4744000.sdhci/by-name/metadata                     flags=backup=1;encryptable=footer" >> recovery.fstab
-        echo "/vendor_boot             emmc      /dev/block/by-name/vendor_boot                  flags=display=\"Vendor Boot\";backup=1;slotselect;flashimg=1" >> recovery.fstab
-        echo "/dtbo                    emmc      /dev/block/by-name/dtbo                         flags=display=\"DTBO\";backup=1;slotselect;flashimg=1" >> recovery.fstab
-        echo "/vbmeta                  emmc      /dev/block/by-name/vbmeta                       flags=display=\"VBMeta\";backup=1;slotselect;flashimg=1" >> recovery.fstab
-        echo "/vbmeta_system           emmc      /dev/block/by-name/vbmeta_system                flags=display=\"VBMeta System\";backup=1;slotselect;flashimg=1" >> recovery.fstab
-        echo "/my_heytap               ext4      /dev/block/by-name/my_heytap                    flags=display=\"HeyTap\";backup=1" >> recovery.fstab
-        echo "/my_product              ext4      /dev/block/by-name/my_product                   flags=display=\"My Product\";backup=1" >> recovery.fstab
-        echo "✅ 分区兼容配置已追加"
+          echo "" >> recovery.fstab
+          echo "# 橙狐适配分区" >> recovery.fstab
+          echo "/data f2fs /dev/block/by-name/userdata flags=encryptable=footer;length=-16384;fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized+wrappedkey_v0,metadata_encryption=aes-256-xts:wrappedkey_v0,keydirectory=/metadata/v0,uses_fde_or_fbe=fbe,fbe_version=2" >> recovery.fstab
+          echo "/metadata ext4 /dev/block/by-name/metadata flags=backup=1;encryptable=footer" >> recovery.fstab
+          echo "/vendor_boot emmc /dev/block/by-name/vendor_boot flags=display=\"Vendor Boot\";backup=1;slotselect;flashimg=1" >> recovery.fstab
+          echo "/dtbo emmc /dev/block/by-name/dtbo flags=display=\"DTBO\";backup=1;slotselect;flashimg=1" >> recovery.fstab
+          echo "/vbmeta emmc /dev/block/by-name/vbmeta flags=display=\"VBMeta\";backup=1;slotselect;flashimg=1" >> recovery.fstab
+          echo "/vbmeta_system emmc /dev/block/by-name/vbmeta_system flags=display=\"VBMeta System\";backup=1;slotselect;flashimg=1" >> recovery.fstab
+          echo "✅ recovery.fstab配置完成"
 
-        echo "" >> device.mk
-        cat >> device.mk << 'ENDOFDEVICE'
-# ========== 追加：橙狐R14 补充配置+OPPO兼容 ==========
+          echo "" >> device.mk
+          cat >> device.mk << 'ENDOFDEV'
 PRODUCT_RELEASE_NAME := holi
 PRODUCT_DEVICE := holi
 PRODUCT_NAME := twrp_holi
@@ -235,91 +229,78 @@ PRODUCT_MANUFACTURER := OPPO
 PRODUCT_USE_DYNAMIC_PARTITIONS := true
 PRODUCT_BUILD_SUPER_PARTITIONS := false
 
-PRODUCT_PACKAGES += \
-    qcom_decrypt \
-    qcom_decrypt_fbe \
-    android.hardware.keymaster@4.0-impl \
-    android.hardware.keymaster@4.0-service
-
-PRODUCT_PACKAGES += \
-    busybox \
-    mkshrc \
-    toybox_static
+PRODUCT_PACKAGES += qcom_decrypt qcom_decrypt_fbe android.hardware.keymaster@4.0-impl android.hardware.keymaster@4.0-service
+PRODUCT_PACKAGES += busybox mkshrc toybox_static
 
 PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/prebuilt/modules,lib/modules)
 PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/prebuilt/firmware,vendor/firmware)
 PRODUCT_COPY_FILES += $(call find-copy-subdir-files,*,device/qualcomm/holi/recovery/root,root)
-ENDOFDEVICE
-        echo "✅ device.mk配置已追加"
+ENDOFDEV
+          echo "✅ device.mk配置完成"
+          echo "✅ 所有配置处理完成"
 
-        echo "======================================"
-        echo "✅ 所有配置处理完成！"
-        echo "======================================"
-        echo "验证信息："
-        echo "驱动模块：$(ls prebuilt/modules/ | wc -l) 个"
-        echo "固件文件：$(ls prebuilt/firmware/ | wc -l) 个"
-        echo "启动脚本：$(ls recovery/root/ | grep rc | wc -l) 个"
-        echo "原厂recovery分区保留：$(grep -c '^/recovery' recovery.fstab) 个条目"
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      - name: 10. 同步橙狐源码
+        run: |
+          set -e
+          WS="${{ steps.pwd.outputs.workspace-folder }}"
+          BRANCH="${{ github.event.inputs.MANIFEST_BRANCH }}"
+          cd "$WS"
+          git clone https://gitlab.com/OrangeFox/sync.git
+          cd sync
+          ./orangefox_sync.sh --branch "$BRANCH" --path "$WS/fox_$BRANCH"
+          cp -r device "$WS/fox_$BRANCH/"
+          echo "✅ 源码同步完成"
 
-    - name: 10. 同步橙狐R14源码
-      run: |
-        set -e
-        cd ${{ steps.pwd.outputs.workspace-folder }}
-        git clone https://gitlab.com/OrangeFox/sync.git
-        cd sync
-        ./orangefox_sync.sh --branch ${{ github.event.inputs.MANIFEST_BRANCH }} --path ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        cp -r device ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      - name: 11. 设置交换空间
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
 
-    - name: 11. 设置交换空间
-      uses: pierotofy/set-swap-space@master
-      with:
-        swap-size-gb: 16
+      - name: 12. 编译橙狐
+        run: |
+          set -e
+          WS="${{ steps.pwd.outputs.workspace-folder }}"
+          BRANCH="${{ github.event.inputs.MANIFEST_BRANCH }}"
+          DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
+          TARGET="${{ github.event.inputs.BUILD_TARGET }}"
+          cd "$WS/fox_$BRANCH"
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          lunch "twrp_$DEVICE-ap2a-eng"
+          make clean
+          mka adbd "${TARGET}image" -j$(nproc --all)
+          echo "✅ 编译完成"
 
-    - name: 12. 开始编译橙狐R14
-      run: |
-        set -e
-        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        lunch twrp_${{ github.event.inputs.DEVICE_NAME }}-ap2a-eng
-        make clean
-        mka adbd ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      - name: 13. 验证产物
+        run: |
+          set -e
+          WS="${{ steps.pwd.outputs.workspace-folder }}"
+          BRANCH="${{ github.event.inputs.MANIFEST_BRANCH }}"
+          DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
+          OUT_DIR="$WS/fox_$BRANCH/out/target/product/$DEVICE"
+          ls -lh "$OUT_DIR"/*.img "$OUT_DIR"/*.zip 2>/dev/null
+          if [ -f "$OUT_DIR/boot.img" ]; then
+            SIZE=$(stat -c%s "$OUT_DIR/boot.img")
+            echo "✅ 编译成功！成品大小：$SIZE 字节"
+          else
+            echo "❌ 编译失败"
+            exit 1
+          fi
 
-    - name: 13. 验证编译产物
-      run: |
-        set -e
-        OUT_DIR=${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}
-        echo "编译产物目录："
-        ls -lh $OUT_DIR/*.img $OUT_DIR/*.zip 2>/dev/null
-        if [ -f "$OUT_DIR/boot.img" ]; then
-          echo "✅ 编译成功！成品boot.img大小：$(stat -c%s $OUT_DIR/boot.img) 字节"
-        else
-          echo "❌ 编译失败，未找到成品boot.img"
-          exit 1
-        fi
-
-    - name: 14. 上传编译成品到Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
-          ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-        name: 橙狐R14.1 for OPPO A1 Pro ${{ github.run_id }}
-        tag_name: ${{ github.run_id }}
-        body: |
-          ## 橙狐 R14.1 for OPPO A1 Pro (holi)
-          ✅ **已修复所有YAML语法错误，OPPO厂商定制化对抗版**
-          - 设备：OPPO A1 Pro 5G
-          - 平台：SM6375 (骁龙695)
-          - 分区：A/B boot-as-recovery
-          - 已支持：FBE解密、OZIP刷入、双槽位切换、AVB绕过
-          
-          ### 刷入方法
-          ```bash
-          fastboot flash boot_a OrangeFox-boot.img
-          fastboot flash boot_b OrangeFox-boot.img
-          fastboot reboot recovery
-          ```
+      - name: 14. 发布到Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+            ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          name: 橙狐R14.1 for OPPO A1 Pro ${{ github.run_id }}
+          tag_name: ${{ github.run_id }}
+          body: |
+            ## 橙狐 R14.1 for OPPO A1 Pro (holi)
+            ✅ 全自动编译生成，已适配OPPO所有定制化
+            - 刷入方法：
+            ```bash
+            fastboot flash boot_a OrangeFox-boot.img
+            fastboot flash boot_b OrangeFox-boot.img
+            fastboot reboot recovery
+            ```
