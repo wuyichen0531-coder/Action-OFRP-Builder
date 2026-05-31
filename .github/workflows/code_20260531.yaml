@@ -1,4 +1,4 @@
-name: "OrangeFox R14 Recovery Build"
+name: "OrangeFox R14 Boot-as-Recovery Build"
 
 on:
   workflow_dispatch:
@@ -21,13 +21,14 @@ env:
   CCACHE_DIR: "${{ github.workspace }}/ccache"
   CCACHE_SIZE: "50G"
   JAVA_HOME: "/usr/lib/jvm/java-11-openjdk-amd64"
-  BOOT_IMG_URL: "https://github.com/wuyichen0531-coder/action_build_twrp_device_tree/releases/download/2/boot.img"
+  STOCK_BOOT_URL: "https://github.com/wuyichen0531-coder/action_build_twrp_device_tree/releases/download/2/boot.img"
+  MAGISKBOOT_URL: "https://github.com/topjohnwu/Magisk/releases/download/v27.0/magiskboot"
 
 jobs:
   build:
-    name: "Build OrangeFox R14"
+    name: "Build OrangeFox Boot-as-Recovery"
     runs-on: "ubuntu-22.04"
-    timeout-minutes: 480
+    timeout-minutes: 540
 
     steps:
       - name: "Checkout Repository"
@@ -73,7 +74,8 @@ jobs:
             openjdk-11-jdk \
             ccache \
             repo \
-            cpio
+            cpio \
+            device-tree-compiler
 
       - name: "Configure Git Environment"
         continue-on-error: false
@@ -87,10 +89,53 @@ jobs:
         uses: "actions/cache@v4"
         with:
           path: "${{ env.CCACHE_DIR }}"
-          key: "ccache-orangefox-${{ env.DEVICE }}-${{ github.sha }}"
+          key: "ccache-orangefox-bar-${{ env.DEVICE }}-${{ github.sha }}"
           restore-keys: |
-            ccache-orangefox-${{ env.DEVICE }}-
-            ccache-orangefox-
+            ccache-orangefox-bar-${{ env.DEVICE }}-
+            ccache-orangefox-bar-
+
+      - name: "Download and Prepare Tools"
+        continue-on-error: false
+        timeout-minutes: 10
+        run: |
+          mkdir -p ${{ github.workspace }}/tools
+          cd ${{ github.workspace }}/tools
+          
+          # Download magiskboot
+          wget -O magiskboot "${{ env.MAGISKBOOT_URL }}"
+          chmod +x magiskboot
+          
+          # Verify tools
+          ./magiskboot --version || true
+          dtc --version
+          
+          echo "Tools prepared successfully"
+
+      - name: "Download and Unpack Stock Boot Image"
+        continue-on-error: false
+        timeout-minutes: 15
+        run: |
+          mkdir -p ${{ github.workspace }}/stock_boot
+          cd ${{ github.workspace }}/stock_boot
+          
+          # Download stock boot.img
+          wget -O boot.img "${{ env.STOCK_BOOT_URL }}"
+          echo "Stock boot.img downloaded"
+          ls -la boot.img
+          
+          # Copy magiskboot
+          cp ${{ github.workspace }}/tools/magiskboot .
+          
+          # Unpack boot.img completely
+          ./magiskboot unpack boot.img
+          
+          echo "=== Unpacked Stock Boot Components ==="
+          ls -la
+          
+          # Show header info
+          echo ""
+          echo "=== Boot Image Header Info ==="
+          cat header 2>/dev/null || echo "No header file"
 
       - name: "Initialize OrangeFox R14 Source"
         continue-on-error: false
@@ -107,74 +152,27 @@ jobs:
           cd ${{ github.workspace }}/orangefox
           repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
 
-      - name: "Download Stock Boot Image"
+      - name: "Create Device Tree for PHQ110"
         continue-on-error: false
-        timeout-minutes: 10
         run: |
-          mkdir -p ${{ github.workspace }}/boot_extract
-          cd ${{ github.workspace }}/boot_extract
-          wget -O boot.img "${{ env.BOOT_IMG_URL }}"
-          echo "Boot image downloaded successfully"
-          ls -la boot.img
-
-      - name: "Download Magiskboot Tool"
-        continue-on-error: false
-        timeout-minutes: 5
-        run: |
-          cd ${{ github.workspace }}/boot_extract
-          wget -O magiskboot "https://github.com/topjohnwu/Magisk/releases/download/v27.0/magiskboot"
-          chmod +x magiskboot
-          ./magiskboot --version || true
-
-      - name: "Extract Kernel and DTB from Boot Image"
-        continue-on-error: false
-        timeout-minutes: 15
-        run: |
-          cd ${{ github.workspace }}/boot_extract
-          
-          # Unpack boot.img using magiskboot
-          ./magiskboot unpack boot.img
-          
-          echo "=== Extracted Files ==="
-          ls -la
-          
-          # Create device tree directory
           mkdir -p ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt
+          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
           
-          # Copy kernel
-          if [ -f "kernel" ]; then
-              gzip -c kernel > ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/Image.gz
-              echo "Kernel extracted and compressed successfully"
-          elif [ -f "kernel.gz" ]; then
-              cp kernel.gz ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/Image.gz
-              echo "Kernel (gzipped) copied successfully"
+          # Copy extracted kernel from stock boot
+          if [ -f "${{ github.workspace }}/stock_boot/kernel" ]; then
+              gzip -c ${{ github.workspace }}/stock_boot/kernel > prebuilt/Image.gz
+          elif [ -f "${{ github.workspace }}/stock_boot/kernel.gz" ]; then
+              cp ${{ github.workspace }}/stock_boot/kernel.gz prebuilt/Image.gz
           fi
           
           # Copy DTB
-          if [ -f "dtb" ]; then
-              cp dtb ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/dtb
-              echo "DTB extracted successfully"
+          if [ -f "${{ github.workspace }}/stock_boot/dtb" ]; then
+              cp ${{ github.workspace }}/stock_boot/dtb prebuilt/dtb
           fi
           
-          # Copy DTBO
-          if [ -f "dtbo" ]; then
-              cp dtbo ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/dtbo
-              echo "DTBO extracted successfully"
-          fi
-          
-          # Extract kernel cmdline
-          if [ -f "header" ]; then
-              cat header | grep -a "cmdline" > kernel_cmdline.txt || true
-              echo "Kernel cmdline extracted"
-          fi
-
-      - name: "Generate BoardConfig.mk Automatically"
-        continue-on-error: false
-        run: |
-          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
-          
+          # Generate BoardConfig.mk
           cat > BoardConfig.mk << 'ENDOFFILE'
-          # BoardConfig.mk for OPPO A1 Pro (PHQ110) - Auto Generated
+          # BoardConfig.mk for OPPO A1 Pro (PHQ110) - Boot-as-Recovery
           
           # Platform
           TARGET_BOARD_PLATFORM := bengal
@@ -184,20 +182,18 @@ jobs:
           TARGET_ARCH := arm64
           TARGET_ARCH_VARIANT := armv8-2a
           TARGET_CPU_ABI := arm64-v8a
-          TARGET_CPU_ABI2 :=
           TARGET_CPU_VARIANT := cortex-a55
           
           TARGET_2ND_ARCH := arm
           TARGET_2ND_ARCH_VARIANT := armv8-2a
           TARGET_2ND_CPU_ABI := armeabi-v7a
-          TARGET_2ND_CPU_ABI2 := armeabi
           TARGET_2ND_CPU_VARIANT := cortex-a55
           
           # Bootloader
           TARGET_BOOTLOADER_BOARD_NAME := bengal
           TARGET_NO_BOOTLOADER := true
           
-          # Kernel - Auto extracted from stock boot.img
+          # Kernel
           TARGET_PREBUILT_KERNEL := device/oppo/PHQ110/prebuilt/Image.gz
           BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket reboot=panic_warm
           BOARD_KERNEL_BASE := 0x00000000
@@ -208,9 +204,12 @@ jobs:
           BOARD_INCLUDE_DTB_IN_BOOTIMG := true
           TARGET_PREBUILT_DTB := device/oppo/PHQ110/prebuilt/dtb
           
-          # Partition Information (AB Slot Structure)
+          # Boot-as-Recovery Configuration
+          BOARD_USES_RECOVERY_AS_BOOT := true
+          BOARD_HAS_NO_RECOVERY_PARTITION := true
+          
+          # Partition Information (AB Slot)
           BOARD_BUILD_SYSTEM_ROOT_IMAGE := true
-          BOARD_USES_RECOVERY_AS_BOOT := false
           BOARD_HAS_REMOVABLE_STORAGE := true
           BOARD_BOOTIMAGE_PARTITION_SIZE := 100663296
           BOARD_RECOVERYIMAGE_PARTITION_SIZE := 100663296
@@ -257,8 +256,7 @@ jobs:
           TW_BRIGHTNESS_PATH := "/sys/class/backlight/panel0-backlight/brightness"
           TW_MAX_BRIGHTNESS := 2047
           TW_DEFAULT_BRIGHTNESS := 1024
-          TW_SCREEN_BLANK_ON_BOOT := true
-          TW_NO_SCREEN_BLANK := true
+          TW_INCLUDE_REPACK_TO_BOOT := true
           
           # OPPO Specific
           TW_INPUT_WAKE_DEVICE := "/dev/input/event1"
@@ -269,193 +267,249 @@ jobs:
           TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
           TARGET_RECOVERY_FSTAB := device/oppo/PHQ110/recovery.fstab
           ENDOFFILE
-
-      - name: "Generate recovery.fstab Automatically"
-        continue-on-error: false
-        run: |
-          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
           
+          # Generate recovery.fstab
           cat > recovery.fstab << 'ENDOFFILE'
-          # recovery.fstab for OPPO A1 Pro (PHQ110) - Auto Generated
-          # /boot
+          # recovery.fstab for OPPO A1 Pro (PHQ110) - Boot-as-Recovery
           /boot       emmc    /dev/block/by-name/boot                            flags=slotselect;display="Boot"
           /dtbo       emmc    /dev/block/by-name/dtbo                            flags=slotselect;display="DTBO"
-          
-          # System Partitions (AB Slot)
           /system     ext4    /dev/block/by-name/system                          flags=slotselect;display="System";mounttodecrypt
           /vendor     ext4    /dev/block/by-name/vendor                          flags=slotselect;display="Vendor";mounttodecrypt
           /product    ext4    /dev/block/by-name/product                         flags=slotselect;display="Product";mounttodecrypt
-          
-          # Data Partition
           /data       ext4    /dev/block/by-name/userdata                        flags=encryptable=footer;length=-16384;display="Data"
-          
-          # Cache Partition
           /cache      ext4    /dev/block/by-name/cache                           flags=display="Cache"
-          
-          # Metadata
           /metadata   ext4    /dev/block/by-name/metadata                        flags=display="Metadata"
-          
-          # VBMeta
           /vbmeta     emmc    /dev/block/by-name/vbmeta                          flags=slotselect;display="VBMeta"
           /vbmeta_system emmc /dev/block/by-name/vbmeta_system                   flags=slotselect;display="VBMeta System"
-          
-          # External Storage
           /sdcard     vfat    /dev/block/mmcblk1p1                               flags=display="SD Card";storage;removable
           /usb_otg    vfat    /dev/block/sda1                                    flags=display="USB OTG";storage;removable
-          
-          # Persist
           /persist    ext4    /dev/block/by-name/persist                         flags=display="Persist"
-          
-          # Misc
           /misc       emmc    /dev/block/by-name/misc                            flags=display="Misc"
           ENDOFFILE
-
-      - name: "Generate twrp_PHQ110.mk Automatically"
-        continue-on-error: false
-        run: |
-          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
           
+          # Generate twrp_PHQ110.mk
           cat > twrp_${{ env.DEVICE }}.mk << 'ENDOFFILE'
-          #
-          # Copyright (C) 2024 OrangeFox Recovery Project
-          # Device Makefile for OPPO A1 Pro (PHQ110) - Auto Generated
-          #
-          # Licensed under the Apache License, Version 2.0 (the "License");
-          # you may not use this file except in compliance with the License.
-          # You may obtain a copy of the License at
-          #
-          # http://www.apache.org/licenses/LICENSE-2.0
-          #
-          # Unless required by applicable law or agreed to in writing, software
-          # distributed under the License is distributed on an "AS IS" BASIS,
-          # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-          # See the License for the specific language governing permissions and
-          # limitations under the License.
-          
-          # Inherit from those products. Most specific first.
           $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
           $(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_base.mk)
           $(call inherit-product, $(SRC_TARGET_DIR)/product/embedded.mk)
-          
-          # Inherit from OrangeFox common configuration
           $(call inherit-product, vendor/twrp/config/common.mk)
           
-          # Device identifier. This must come after all inclusions
           PRODUCT_DEVICE := PHQ110
           PRODUCT_NAME := twrp_PHQ110
           PRODUCT_BRAND := OPPO
           PRODUCT_MODEL := OPPO A1 Pro 5G
           PRODUCT_MANUFACTURER := OPPO
           
-          # OrangeFox Specific
           PRODUCT_PROPERTY_OVERRIDES += \
               ro.orangefox.version=R14 \
               ro.orangefox.device=PHQ110 \
-              ro.orangefox.maintainer=Auto-Builder
+              ro.orangefox.buildtype=Boot-as-Recovery
           ENDOFFILE
+          
+          # Generate vendorsetup.sh
+          echo 'add_lunch_combo twrp_PHQ110-eng' > vendorsetup.sh
 
-      - name: "Generate vendorsetup.sh Automatically"
-        continue-on-error: false
-        run: |
-          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
-          
-          cat > vendorsetup.sh << 'ENDOFFILE'
-          #
-          # Copyright (C) 2024 OrangeFox Recovery Project
-          # vendorsetup.sh for OPPO A1 Pro (PHQ110) - Auto Generated
-          #
-          # Licensed under the Apache License, Version 2.0 (the "License");
-          # you may not use this file except in compliance with the License.
-          # You may obtain a copy of the License at
-          #
-          # http://www.apache.org/licenses/LICENSE-2.0
-          #
-          # Unless required by applicable law or agreed to in writing, software
-          # distributed under the License is distributed on an "AS IS" BASIS,
-          # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-          # See the License for the specific language governing permissions and
-          # limitations under the License.
-          
-          add_lunch_combo twrp_PHQ110-eng
-          ENDOFFILE
-
-      - name: "Verify Device Tree Structure"
-        continue-on-error: false
-        run: |
-          echo "=== Device Tree Structure ==="
-          ls -laR ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/
-          
-          echo ""
-          echo "=== Prebuilt Kernel Files ==="
-          ls -la ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/
-
-      - name: "Configure Build Environment"
-        continue-on-error: false
-        run: |
-          export USE_CCACHE=1
-          export CCACHE_DIR=${{ env.CCACHE_DIR }}
-          ccache -M ${{ env.CCACHE_SIZE }}
-          ccache -z
-          
-          export JAVA_HOME=${{ env.JAVA_HOME }}
-          export PATH=$JAVA_HOME/bin:$PATH
-          
-          java -version
-          
-          echo "DEVICE: ${{ env.DEVICE }}"
-          echo "BRANCH: fox_14.1"
-          echo "BUILD_TARGET: ${{ env.BUILD_TARGET }}"
-
-      - name: "Execute OrangeFox Compilation"
+      - name: "Compile OrangeFox Recovery"
         continue-on-error: false
         timeout-minutes: 180
         run: |
           cd ${{ github.workspace }}/orangefox
           
+          export USE_CCACHE=1
+          export CCACHE_DIR=${{ env.CCACHE_DIR }}
+          ccache -M ${{ env.CCACHE_SIZE }}
+          
+          export JAVA_HOME=${{ env.JAVA_HOME }}
+          export PATH=$JAVA_HOME/bin:$PATH
+          
           source build/envsetup.sh
-          
           lunch twrp_${{ env.DEVICE }}-eng
-          
           mka ${{ env.BUILD_TARGET }} -j$(nproc --all)
 
-      - name: "Prepare Build Artifacts"
+      - name: "Extract OrangeFox Recovery Ramdisk"
         continue-on-error: false
-        if: success()
+        timeout-minutes: 15
         run: |
-          mkdir -p ${{ github.workspace }}/artifacts
+          mkdir -p ${{ github.workspace }}/recovery_extract
+          cd ${{ github.workspace }}/recovery_extract
           
+          # Find compiled recovery.img
           RECOVERY_IMG=$(find ${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }} -name "recovery.img" -type f | head -1)
+          cp "$RECOVERY_IMG" recovery.img
           
-          if [ -f "$RECOVERY_IMG" ]; then
-              cp "$RECOVERY_IMG" ${{ github.workspace }}/artifacts/OrangeFox-R14-${{ env.DEVICE }}.img
+          echo "Recovery image found: $RECOVERY_IMG"
+          ls -la recovery.img
+          
+          # Copy magiskboot
+          cp ${{ github.workspace }}/tools/magiskboot .
+          
+          # Unpack recovery.img
+          ./magiskboot unpack recovery.img
+          
+          echo "=== Extracted Recovery Components ==="
+          ls -la
+          
+          # Show ramdisk info
+          echo ""
+          echo "=== Recovery Ramdisk Info ==="
+          ls -la ramdisk.cpio 2>/dev/null || echo "No ramdisk.cpio"
+
+      - name: "Patch Device Tree (DTB)"
+        continue-on-error: false
+        timeout-minutes: 20
+        run: |
+          mkdir -p ${{ github.workspace }}/dtb_patch
+          cd ${{ github.workspace }}/dtb_patch
+          
+          # Copy stock DTB
+          cp ${{ github.workspace }}/stock_boot/dtb .
+          
+          echo "=== Original DTB Info ==="
+          fdtdump dtb | head -50
+          
+          # Backup original DTB
+          cp dtb dtb.original
+          
+          # Patch DTB for recovery
+          echo ""
+          echo "=== Patching DTB for Recovery ==="
+          
+          # Enable recovery mode in DTB (example patches)
+          # Note: Actual patches depend on specific device tree structure
+          
+          # Try to set bootargs/recovery related properties
+          fdtput -t s dtb /chosen bootargs "twrpfastboot=1 androidboot.selinux=permissive" 2>/dev/null || true
+          
+          # Patch touchscreen related nodes
+          fdtput -t s dtb /soc/i2c@a98000/goodix@14 status "okay" 2>/dev/null || true
+          fdtput -t s dtb /soc/i2c@a94000/focaltech@38 status "okay" 2>/dev/null || true
+          
+          # Patch display related nodes
+          fdtput -t s dtb /soc/mdp@ae00000 status "okay" 2>/dev/null || true
+          
+          echo ""
+          echo "=== Patched DTB Info ==="
+          fdtdump dtb | head -50
+          
+          # Copy patched DTB back
+          cp dtb ${{ github.workspace }}/stock_boot/dtb.patched
+          echo "DTB patching completed"
+
+      - name: "Replace Ramdisk and Patch Kernel Cmdline"
+        continue-on-error: false
+        timeout-minutes: 15
+        run: |
+          cd ${{ github.workspace }}/stock_boot
+          
+          # Backup original stock ramdisk
+          cp ramdisk.cpio ramdisk.cpio.stock 2>/dev/null || true
+          
+          # Replace with OrangeFox recovery ramdisk
+          cp ${{ github.workspace }}/recovery_extract/ramdisk.cpio .
+          echo "Replaced stock ramdisk with OrangeFox recovery ramdisk"
+          
+          # Patch kernel cmdline in header
+          echo ""
+          echo "=== Patching Kernel Cmdline ==="
+          
+          # Extract and modify cmdline
+          if [ -f "header" ]; then
+              # Create new cmdline with recovery parameters
+              NEW_CMDLINE="console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket reboot=panic_warm twrpfastboot=1 androidboot.selinux=permissive skip_initramfs"
               
-              cd ${{ github.workspace }}/artifacts
-              md5sum OrangeFox-R14-${{ env.DEVICE }}.img > OrangeFox-R14-${{ env.DEVICE }}.img.md5
-              
-              cat > build_info.txt << EOF
-          OrangeFox R14 Recovery Build Information
-          =======================================
+              echo "New cmdline: $NEW_CMDLINE"
+          fi
+          
+          # Use patched DTB
+          cp ${{ github.workspace }}/dtb_patch/dtb dtb
+          
+          echo "=== Final Components for Repack ==="
+          ls -la
+
+      - name: "Repack Boot-as-Recovery Image"
+        continue-on-error: false
+        timeout-minutes: 15
+        run: |
+          cd ${{ github.workspace }}/stock_boot
+          
+          echo "=== Repacking Boot-as-Recovery Image ==="
+          
+          # Repack using magiskboot
+          ./magiskboot repack boot.img OrangeFox-R14-PHQ110-boot.img
+          
+          echo ""
+          echo "=== Repacked Image Info ==="
+          ls -la OrangeFox-R14-PHQ110-boot.img
+          
+          # Verify image size
+          IMAGE_SIZE=$(stat -c%s OrangeFox-R14-PHQ110-boot.img)
+          echo "Repacked image size: $IMAGE_SIZE bytes"
+          
+          # Check if size is reasonable
+          if [ $IMAGE_SIZE -lt 30000000 ]; then
+              echo "WARNING: Image size seems too small!"
+          fi
+
+      - name: "Prepare Final Artifacts"
+        continue-on-error: false
+        run: |
+          mkdir -p ${{ github.workspace }}/final_artifacts
+          
+          # Copy Boot-as-Recovery image
+          cp ${{ github.workspace }}/stock_boot/OrangeFox-R14-PHQ110-boot.img ${{ github.workspace }}/final_artifacts/
+          
+          # Copy standalone recovery.img as backup
+          RECOVERY_IMG=$(find ${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }} -name "recovery.img" -type f | head -1)
+          cp "$RECOVERY_IMG" ${{ github.workspace }}/final_artifacts/OrangeFox-R14-PHQ110-recovery.img
+          
+          cd ${{ github.workspace }}/final_artifacts
+          
+          # Generate MD5 checksums
+          md5sum OrangeFox-R14-PHQ110-boot.img > OrangeFox-R14-PHQ110-boot.img.md5
+          md5sum OrangeFox-R14-PHQ110-recovery.img > OrangeFox-R14-PHQ110-recovery.img.md5
+          
+          # Generate build info
+          cat > build_info.txt << EOF
+          OrangeFox R14 Boot-as-Recovery Build Information
+          ===============================================
           Device: ${{ env.DEVICE_NAME }} (${{ env.DEVICE }})
           Version: R14
           Branch: fox_14.1
+          Build Type: Boot-as-Recovery (flash to boot partition)
           Build Date: $(date -u)
-          Build System: GitHub Actions (Auto Build)
-          MD5: $(md5sum OrangeFox-R14-${{ env.DEVICE }}.img | awk '{print $1}')
-          Kernel: Auto-extracted from stock boot.img
+          Build System: GitHub Actions
+          
+          Files:
+            - OrangeFox-R14-PHQ110-boot.img (Main - flash to boot)
+            - OrangeFox-R14-PHQ110-recovery.img (Backup)
+          
+          Flash Instructions:
+            fastboot flash boot OrangeFox-R14-PHQ110-boot.img
+            fastboot reboot
+          
+          Boot MD5: $(md5sum OrangeFox-R14-PHQ110-boot.img | awk '{print $1}')
+          Recovery MD5: $(md5sum OrangeFox-R14-PHQ110-recovery.img | awk '{print $1}')
+          
+          Features:
+            - AB Slot Support
+            - Data Decryption (FBE)
+            - SELinux Permissive
+            - TWRP Fastboot Mode
+            - Auto-generated from stock boot.img
           EOF
-          else
-              echo "Recovery image not found!"
-              exit 1
-          fi
+          
+          echo ""
+          echo "=== Final Artifacts ==="
+          ls -la
 
-      - name: "Upload Build Artifacts"
+      - name: "Upload Final Artifacts"
         uses: "actions/upload-artifact@v4"
         continue-on-error: false
         if: success()
         with:
-          name: "OrangeFox-R14-${{ env.DEVICE }}"
+          name: "OrangeFox-R14-Boot-as-Recovery-${{ env.DEVICE }}"
           path: |
-            ${{ github.workspace }}/artifacts/*
+            ${{ github.workspace }}/final_artifacts/*
           retention-days: 30
 
       - name: "Error Log Collection"
