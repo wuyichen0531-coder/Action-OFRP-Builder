@@ -37,45 +37,52 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: "Free Up Disk Space [CRITICAL FIX]"
+        continue-on-error: false
+        timeout-minutes: 15
+        run: |
+          echo "=== Before Cleanup ==="
+          df -h
+          
+          echo ""
+          echo "=== Removing Android SDK (12GB) ==="
+          sudo rm -rf /usr/local/lib/android || true
+          
+          echo ""
+          echo "=== Removing Docker Images (10GB) ==="
+          docker rmi $(docker image ls -aq) >/dev/null 2>&1 || true
+          
+          echo ""
+          echo "=== Removing Unused Tools ==="
+          sudo rm -rf /usr/share/dotnet /usr/local/.ghcup /usr/local/share/powershell || true
+          sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /opt/mssql-tools || true
+          sudo rm -rf /usr/local/lib/node_modules /usr/local/share/chromium || true
+          sudo rm -rf /usr/local/graalvm /usr/local/share/boost || true
+          
+          echo ""
+          echo "=== Clean APT Cache ==="
+          sudo apt-get clean
+          sudo apt-get autoremove -y
+          
+          echo ""
+          echo "=== After Cleanup ==="
+          df -h
+          
+          echo ""
+          echo "✓ Freed ~40GB disk space!"
+
       - name: "Install System Dependencies"
         continue-on-error: false
         timeout-minutes: 30
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
-            git-core \
-            gnupg \
-            flex \
-            bison \
-            build-essential \
-            zip \
-            curl \
-            wget \
-            zlib1g-dev \
-            gcc-multilib \
-            g++-multilib \
-            libc6-dev-i386 \
-            lib32ncurses5-dev \
-            x11proto-core-dev \
-            libx11-dev \
-            lib32z1-dev \
-            libgl1-mesa-dev \
-            libxml2-utils \
-            xsltproc \
-            unzip \
-            fontconfig \
-            python3 \
-            python3-pip \
-            libssl-dev \
-            liblz4-tool \
-            rsync \
-            schedtool \
-            squashfs-tools \
-            openjdk-11-jdk \
-            ccache \
-            repo \
-            cpio \
-            device-tree-compiler
+            git-core gnupg flex bison build-essential zip curl wget \
+            zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 \
+            lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev \
+            libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig \
+            python3 python3-pip libssl-dev liblz4-tool rsync schedtool \
+            squashfs-tools openjdk-11-jdk ccache repo cpio device-tree-compiler
 
       - name: "Configure Git Environment"
         continue-on-error: false
@@ -94,7 +101,7 @@ jobs:
             ccache-orangefox-bar-${{ env.DEVICE }}-
             ccache-orangefox-bar-
 
-      - name: "Download and Prepare Tools [FIXED]"
+      - name: "Download and Prepare Tools [Magisk FIXED]"
         continue-on-error: false
         timeout-minutes: 10
         run: |
@@ -102,23 +109,18 @@ jobs:
           cd ${{ github.workspace }}/tools
           
           echo "=== Downloading Magisk ${{ env.MAGISK_VERSION }} ==="
-          
-          # 修复：从Magisk APK中提取magiskboot（v27+不再提供单独的magiskboot二进制）
           wget -O Magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/${{ env.MAGISK_VERSION }}/Magisk-${{ env.MAGISK_VERSION }}.apk"
           
-          # 提取arm64版本的magiskboot
+          # Extract magiskboot from APK
           unzip -j Magisk.apk "lib/arm64-v8a/libmagiskboot.so" -d .
           mv libmagiskboot.so magiskboot
           chmod +x magiskboot
           
-          # 验证工具
           echo "=== Magiskboot Version ==="
           ./magiskboot --version || ./magiskboot -V || true
-          
           echo "=== DTC Version ==="
           dtc --version
-          
-          echo "Tools prepared successfully!"
+          echo "✓ Tools ready!"
 
       - name: "Download and Unpack Stock Boot Image"
         continue-on-error: false
@@ -126,25 +128,11 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/stock_boot
           cd ${{ github.workspace }}/stock_boot
-          
-          # Download stock boot.img
           wget -O boot.img "${{ env.STOCK_BOOT_URL }}"
-          echo "Stock boot.img downloaded successfully"
-          ls -la boot.img
-          
-          # Copy magiskboot
           cp ${{ github.workspace }}/tools/magiskboot .
-          
-          # Unpack boot.img completely
           ./magiskboot unpack boot.img
-          
-          echo "=== Unpacked Stock Boot Components ==="
+          echo "=== Unpacked Components ==="
           ls -la
-          
-          # Show header info
-          echo ""
-          echo "=== Boot Image Header Info ==="
-          cat header 2>/dev/null || echo "No header file (new bootimg format)"
 
       - name: "Initialize OrangeFox R14 Source"
         continue-on-error: false
@@ -152,7 +140,7 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/orangefox
           cd ${{ github.workspace }}/orangefox
-          repo init -u ${{ env.MANIFEST }} -b fox_14.1 --depth=1
+          repo init -u ${{ env.MANIFEST }} -b fox_14.1 --depth=1 --partial
 
       - name: "Sync OrangeFox Source Code"
         continue-on-error: false
@@ -167,47 +155,29 @@ jobs:
           mkdir -p ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt
           cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
           
-          # Copy extracted kernel from stock boot
+          # Copy kernel
           if [ -f "${{ github.workspace }}/stock_boot/kernel" ]; then
               gzip -c ${{ github.workspace }}/stock_boot/kernel > prebuilt/Image.gz
-              echo "Kernel extracted and compressed"
           elif [ -f "${{ github.workspace }}/stock_boot/kernel.gz" ]; then
               cp ${{ github.workspace }}/stock_boot/kernel.gz prebuilt/Image.gz
-              echo "Kernel (gzipped) copied"
           fi
           
           # Copy DTB
-          if [ -f "${{ github.workspace }}/stock_boot/dtb" ]; then
-              cp ${{ github.workspace }}/stock_boot/dtb prebuilt/dtb
-              echo "DTB copied"
-          fi
+          [ -f "${{ github.workspace }}/stock_boot/dtb" ] && cp ${{ github.workspace }}/stock_boot/dtb prebuilt/dtb
           
-          # Generate BoardConfig.mk
-          cat > BoardConfig.mk << 'ENDOFFILE'
-          # BoardConfig.mk for OPPO A1 Pro (PHQ110) - Boot-as-Recovery
-          
-          # Platform
+          # BoardConfig.mk
+          cat > BoardConfig.mk << 'EOF'
           TARGET_BOARD_PLATFORM := bengal
-          TARGET_BOARD_PLATFORM_GPU := qcom-adreno619
-          
-          # Architecture
           TARGET_ARCH := arm64
           TARGET_ARCH_VARIANT := armv8-2a
-          TARGET_CPU_ABI := arm64-v8a
           TARGET_CPU_VARIANT := cortex-a55
-          
           TARGET_2ND_ARCH := arm
           TARGET_2ND_ARCH_VARIANT := armv8-2a
-          TARGET_2ND_CPU_ABI := armeabi-v7a
           TARGET_2ND_CPU_VARIANT := cortex-a55
-          
-          # Bootloader
           TARGET_BOOTLOADER_BOARD_NAME := bengal
           TARGET_NO_BOOTLOADER := true
-          
-          # Kernel
           TARGET_PREBUILT_KERNEL := device/oppo/PHQ110/prebuilt/Image.gz
-          BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket reboot=panic_warm
+          BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200n8 androidboot.hardware=qcom
           BOARD_KERNEL_BASE := 0x00000000
           BOARD_KERNEL_PAGESIZE := 4096
           BOARD_KERNEL_TAGS_OFFSET := 0x01E00000
@@ -215,14 +185,9 @@ jobs:
           BOARD_DTB_OFFSET := 0x01F00000
           BOARD_INCLUDE_DTB_IN_BOOTIMG := true
           TARGET_PREBUILT_DTB := device/oppo/PHQ110/prebuilt/dtb
-          
-          # Boot-as-Recovery Configuration
           BOARD_USES_RECOVERY_AS_BOOT := true
           BOARD_HAS_NO_RECOVERY_PARTITION := true
-          
-          # Partition Information (AB Slot)
           BOARD_BUILD_SYSTEM_ROOT_IMAGE := true
-          BOARD_HAS_REMOVABLE_STORAGE := true
           BOARD_BOOTIMAGE_PARTITION_SIZE := 100663296
           BOARD_RECOVERYIMAGE_PARTITION_SIZE := 100663296
           BOARD_CACHEIMAGE_PARTITION_SIZE := 268435456
@@ -235,19 +200,8 @@ jobs:
           BOARD_SYSTEMIMAGE_FILE_SYSTEM_TYPE := ext4
           BOARD_USERDATAIMAGE_PARTITION_SIZE := 118111600640
           BOARD_FLASH_BLOCK_SIZE := 262144
-          
-          # AB Slot Configuration
           AB_OTA_UPDATER := true
-          AB_OTA_PARTITIONS := \
-            boot \
-            dtbo \
-            system \
-            vendor \
-            product \
-            vbmeta \
-            vbmeta_system
-          
-          # Crypto / Data Decryption
+          AB_OTA_PARTITIONS := boot dtbo system vendor product vbmeta vbmeta_system
           TW_INCLUDE_CRYPTO := true
           TW_INCLUDE_CRYPTO_FBE := true
           TW_USE_FSCRYPT_POLICY := 2
@@ -255,12 +209,8 @@ jobs:
           TW_CRYPTO_FBE_DECRYPT := true
           TW_INCLUDE_NTFS_3G := true
           TW_INCLUDE_FUSE_EXFAT := true
-          
-          # File Systems
           TARGET_USERIMAGES_USE_EXT4 := true
           TARGET_USERIMAGES_USE_F2FS := true
-          
-          # TWRP Configuration
           TW_THEME := portrait_hdpi
           TW_DEVICE_VERSION := R14
           TW_EXCLUDE_DEFAULT_USB_INIT := true
@@ -269,73 +219,58 @@ jobs:
           TW_MAX_BRIGHTNESS := 2047
           TW_DEFAULT_BRIGHTNESS := 1024
           TW_INCLUDE_REPACK_TO_BOOT := true
-          
-          # OPPO Specific
           TW_INPUT_WAKE_DEVICE := "/dev/input/event1"
           TW_HAS_DOWNLOAD_MODE := true
           TW_SUPPORT_USB_MTP := true
-          
-          # Recovery Properties
           TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
           TARGET_RECOVERY_FSTAB := device/oppo/PHQ110/recovery.fstab
-          ENDOFFILE
+          EOF
           
-          # Generate recovery.fstab
-          cat > recovery.fstab << 'ENDOFFILE'
-          # recovery.fstab for OPPO A1 Pro (PHQ110) - Boot-as-Recovery
-          /boot       emmc    /dev/block/by-name/boot                            flags=slotselect;display="Boot"
-          /dtbo       emmc    /dev/block/by-name/dtbo                            flags=slotselect;display="DTBO"
-          /system     ext4    /dev/block/by-name/system                          flags=slotselect;display="System";mounttodecrypt
-          /vendor     ext4    /dev/block/by-name/vendor                          flags=slotselect;display="Vendor";mounttodecrypt
-          /product    ext4    /dev/block/by-name/product                         flags=slotselect;display="Product";mounttodecrypt
-          /data       ext4    /dev/block/by-name/userdata                        flags=encryptable=footer;length=-16384;display="Data"
-          /cache      ext4    /dev/block/by-name/cache                           flags=display="Cache"
-          /metadata   ext4    /dev/block/by-name/metadata                        flags=display="Metadata"
-          /vbmeta     emmc    /dev/block/by-name/vbmeta                          flags=slotselect;display="VBMeta"
-          /vbmeta_system emmc /dev/block/by-name/vbmeta_system                   flags=slotselect;display="VBMeta System"
-          /sdcard     vfat    /dev/block/mmcblk1p1                               flags=display="SD Card";storage;removable
-          /usb_otg    vfat    /dev/block/sda1                                    flags=display="USB OTG";storage;removable
-          /persist    ext4    /dev/block/by-name/persist                         flags=display="Persist"
-          /misc       emmc    /dev/block/by-name/misc                            flags=display="Misc"
-          ENDOFFILE
+          # recovery.fstab
+          cat > recovery.fstab << 'EOF'
+          /boot       emmc    /dev/block/by-name/boot        flags=slotselect;display="Boot"
+          /dtbo       emmc    /dev/block/by-name/dtbo        flags=slotselect;display="DTBO"
+          /system     ext4    /dev/block/by-name/system      flags=slotselect;display="System";mounttodecrypt
+          /vendor     ext4    /dev/block/by-name/vendor      flags=slotselect;display="Vendor";mounttodecrypt
+          /product    ext4    /dev/block/by-name/product     flags=slotselect;display="Product";mounttodecrypt
+          /data       ext4    /dev/block/by-name/userdata    flags=encryptable=footer;length=-16384;display="Data"
+          /cache      ext4    /dev/block/by-name/cache       flags=display="Cache"
+          /metadata   ext4    /dev/block/by-name/metadata    flags=display="Metadata"
+          /vbmeta     emmc    /dev/block/by-name/vbmeta      flags=slotselect;display="VBMeta"
+          /vbmeta_system emmc /dev/block/by-name/vbmeta_system flags=slotselect;display="VBMeta System"
+          /sdcard     vfat    /dev/block/mmcblk1p1           flags=display="SD Card";storage;removable
+          /usb_otg    vfat    /dev/block/sda1                flags=display="USB OTG";storage;removable
+          /persist    ext4    /dev/block/by-name/persist     flags=display="Persist"
+          /misc       emmc    /dev/block/by-name/misc        flags=display="Misc"
+          EOF
           
-          # Generate twrp_PHQ110.mk
-          cat > twrp_${{ env.DEVICE }}.mk << 'ENDOFFILE'
+          # twrp_PHQ110.mk
+          cat > twrp_${{ env.DEVICE }}.mk << 'EOF'
           $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
           $(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_base.mk)
           $(call inherit-product, $(SRC_TARGET_DIR)/product/embedded.mk)
           $(call inherit-product, vendor/twrp/config/common.mk)
-          
           PRODUCT_DEVICE := PHQ110
           PRODUCT_NAME := twrp_PHQ110
           PRODUCT_BRAND := OPPO
           PRODUCT_MODEL := OPPO A1 Pro 5G
           PRODUCT_MANUFACTURER := OPPO
+          PRODUCT_PROPERTY_OVERRIDES += ro.orangefox.version=R14 ro.orangefox.device=PHQ110 ro.orangefox.buildtype=Boot-as-Recovery
+          EOF
           
-          PRODUCT_PROPERTY_OVERRIDES += \
-              ro.orangefox.version=R14 \
-              ro.orangefox.device=PHQ110 \
-              ro.orangefox.buildtype=Boot-as-Recovery
-          ENDOFFILE
-          
-          # Generate vendorsetup.sh
           echo 'add_lunch_combo twrp_PHQ110-eng' > vendorsetup.sh
-          
-          echo "Device tree created successfully!"
+          echo "✓ Device tree created!"
 
       - name: "Compile OrangeFox Recovery"
         continue-on-error: false
         timeout-minutes: 180
         run: |
           cd ${{ github.workspace }}/orangefox
-          
           export USE_CCACHE=1
           export CCACHE_DIR=${{ env.CCACHE_DIR }}
           ccache -M ${{ env.CCACHE_SIZE }}
-          
           export JAVA_HOME=${{ env.JAVA_HOME }}
           export PATH=$JAVA_HOME/bin:$PATH
-          
           source build/envsetup.sh
           lunch twrp_${{ env.DEVICE }}-eng
           mka ${{ env.BUILD_TARGET }} -j$(nproc --all)
@@ -346,21 +281,10 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/recovery_extract
           cd ${{ github.workspace }}/recovery_extract
-          
-          # Find compiled recovery.img
           RECOVERY_IMG=$(find ${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }} -name "recovery.img" -type f | head -1)
           cp "$RECOVERY_IMG" recovery.img
-          
-          echo "Recovery image found: $RECOVERY_IMG"
-          ls -la recovery.img
-          
-          # Copy magiskboot
           cp ${{ github.workspace }}/tools/magiskboot .
-          
-          # Unpack recovery.img
           ./magiskboot unpack recovery.img
-          
-          echo "=== Extracted Recovery Components ==="
           ls -la
 
       - name: "Patch Device Tree (DTB)"
@@ -369,116 +293,41 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/dtb_patch
           cd ${{ github.workspace }}/dtb_patch
-          
-          # Copy stock DTB
           cp ${{ github.workspace }}/stock_boot/dtb .
-          
-          echo "=== Original DTB Info ==="
-          fdtdump dtb | head -30
-          
-          # Backup original DTB
           cp dtb dtb.original
-          
-          # Patch DTB for recovery
-          echo ""
-          echo "=== Patching DTB for Recovery ==="
-          
-          # Enable recovery mode properties
           fdtput -t s dtb /chosen bootargs "twrpfastboot=1 androidboot.selinux=permissive" 2>/dev/null || true
-          
-          # Patch touchscreen nodes
           fdtput -t s dtb /soc/i2c@a98000/goodix@14 status "okay" 2>/dev/null || true
           fdtput -t s dtb /soc/i2c@a94000/focaltech@38 status "okay" 2>/dev/null || true
-          
-          # Patch display nodes
-          fdtput -t s dtb /soc/mdp@ae00000 status "okay" 2>/dev/null || true
-          
-          echo "DTB patching completed"
+          echo "✓ DTB patched!"
 
-      - name: "Replace Ramdisk and Patch Kernel Cmdline"
+      - name: "Replace Ramdisk and Patch Cmdline"
         continue-on-error: false
         timeout-minutes: 15
         run: |
           cd ${{ github.workspace }}/stock_boot
-          
-          # Backup original stock ramdisk
           cp ramdisk.cpio ramdisk.cpio.stock 2>/dev/null || true
-          
-          # Replace with OrangeFox recovery ramdisk
           cp ${{ github.workspace }}/recovery_extract/ramdisk.cpio .
-          echo "✓ Replaced stock ramdisk with OrangeFox recovery ramdisk"
-          
-          # Use patched DTB
           cp ${{ github.workspace }}/dtb_patch/dtb dtb
-          echo "✓ Using patched DTB"
-          
-          echo "=== Final Components for Repack ==="
-          ls -la
+          echo "✓ Ramdisk replaced with OrangeFox!"
 
       - name: "Repack Boot-as-Recovery Image"
         continue-on-error: false
         timeout-minutes: 15
         run: |
           cd ${{ github.workspace }}/stock_boot
-          
-          echo "=== Repacking Boot-as-Recovery Image ==="
-          
-          # Repack using magiskboot
           ./magiskboot repack boot.img OrangeFox-R14-PHQ110-boot.img
-          
-          echo ""
-          echo "=== Repacked Image Info ==="
           ls -la OrangeFox-R14-PHQ110-boot.img
-          
-          # Verify image size
-          IMAGE_SIZE=$(stat -c%s OrangeFox-R14-PHQ110-boot.img)
-          echo "Repacked image size: $IMAGE_SIZE bytes"
 
       - name: "Prepare Final Artifacts"
         continue-on-error: false
         run: |
           mkdir -p ${{ github.workspace }}/final_artifacts
-          
-          # Copy Boot-as-Recovery image
           cp ${{ github.workspace }}/stock_boot/OrangeFox-R14-PHQ110-boot.img ${{ github.workspace }}/final_artifacts/
-          
-          # Copy standalone recovery.img as backup
           RECOVERY_IMG=$(find ${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }} -name "recovery.img" -type f | head -1)
           cp "$RECOVERY_IMG" ${{ github.workspace }}/final_artifacts/OrangeFox-R14-PHQ110-recovery.img
-          
           cd ${{ github.workspace }}/final_artifacts
-          
-          # Generate MD5 checksums
           md5sum OrangeFox-R14-PHQ110-boot.img > OrangeFox-R14-PHQ110-boot.img.md5
           md5sum OrangeFox-R14-PHQ110-recovery.img > OrangeFox-R14-PHQ110-recovery.img.md5
-          
-          # Generate build info
-          cat > build_info.txt << EOF
-          OrangeFox R14 Boot-as-Recovery Build Information
-          ===============================================
-          Device: ${{ env.DEVICE_NAME }} (${{ env.DEVICE }})
-          Version: R14
-          Branch: fox_14.1
-          Build Type: Boot-as-Recovery (flash to boot partition)
-          Build Date: $(date -u)
-          
-          Flash Instructions:
-            fastboot flash boot OrangeFox-R14-PHQ110-boot.img
-            fastboot reboot
-          
-          Boot MD5: $(md5sum OrangeFox-R14-PHQ110-boot.img | awk '{print $1}')
-          Recovery MD5: $(md5sum OrangeFox-R14-PHQ110-recovery.img | awk '{print $1}')
-          
-          Features:
-            - AB Slot Support
-            - Data Decryption (FBE v2)
-            - SELinux Permissive
-            - TWRP Fastboot Mode
-            - Auto-generated from stock boot.img
-          EOF
-          
-          echo ""
-          echo "=== Final Artifacts ==="
           ls -la
 
       - name: "Upload Final Artifacts"
@@ -487,29 +336,14 @@ jobs:
         if: success()
         with:
           name: "OrangeFox-R14-Boot-as-Recovery-${{ env.DEVICE }}"
-          path: |
-            ${{ github.workspace }}/final_artifacts/*
+          path: ${{ github.workspace }}/final_artifacts/*
           retention-days: 30
 
       - name: "Error Log Collection"
         continue-on-error: false
         if: failure()
         run: |
-          echo "========================================"
-          echo "Build failed! Collecting error logs..."
-          echo "========================================"
-          
-          if [ -d "${{ github.workspace }}/orangefox/out" ]; then
-              echo "Last 100 lines of build log:"
-              tail -100 ${{ github.workspace }}/orangefox/out/verbose.log 2>/dev/null || echo "No verbose.log found"
-          fi
-          
-          echo ""
-          echo "Disk usage:"
-          df -h
-          
-          echo ""
-          echo "Memory usage:"
-          free -h
-          
+          echo "=== Build Failed ==="
+          [ -d "${{ github.workspace }}/orangefox/out" ] && tail -150 ${{ github.workspace }}/orangefox/out/verbose.log 2>/dev/null || true
+          df -h && free -h
           exit 1
