@@ -50,7 +50,6 @@ jobs:
           
           echo ""
           echo "=== Removing Docker Images (10GB) ==="
-          docker
           docker rmi $(docker image ls -aq) >/dev/null 2>&1 || true
           
           echo ""
@@ -100,26 +99,41 @@ jobs:
             ccache-orangefox-bar-${{ env.DEVICE }}-
             ccache-orangefox-bar-
 
-      - name: "Download and Prepare Tools [Magisk FIXED]"
+      - name: "Download Tools [x86_64 ARCH FIXED]"
         continue-on-error: false
         timeout-minutes: 10
         run: |
           mkdir -p ${{ github.workspace }}/tools
           cd ${{ github.workspace }}/tools
           
+          echo "=== System Architecture ==="
+          uname -m
+          
+          echo ""
           echo "=== Downloading Magisk ${{ env.MAGISK_VERSION }} ==="
           wget -O Magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/${{ env.MAGISK_VERSION }}/Magisk-${{ env.MAGISK_VERSION }}.apk"
           
-          # Extract magiskboot from APK
-          unzip -j Magisk.apk "lib/arm64-v8a/libmagiskboot.so" -d .
+          # ✅ 关键修复：提取 x86_64 版本（GitHub Actions是x86_64）
+          echo ""
+          echo "=== Extracting x86_64 magiskboot ==="
+          unzip -j Magisk.apk "lib/x86_64/libmagiskboot.so" -d .
           mv libmagiskboot.so magiskboot
           chmod +x magiskboot
           
-          echo "=== Magiskboot Version ==="
-          ./magiskboot --version || ./magiskboot -V || true
+          echo ""
+          echo "=== Verify Binary ==="
+          file magiskboot
+          
+          echo ""
+          echo "=== Test Execution ==="
+          ./magiskboot --help 2>&1 | head -5
+          
+          echo ""
           echo "=== DTC Version ==="
           dtc --version
-          echo "✓ Tools ready!"
+          
+          echo ""
+          echo "✓ All tools ready!"
 
       - name: "Download and Unpack Stock Boot Image"
         continue-on-error: false
@@ -148,7 +162,7 @@ jobs:
           cd ${{ github.workspace }}/orangefox
           repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
 
-      - name: "Create Device Tree for PHQ110 [Boot-as-Recovery FIXED]"
+      - name: "Create Device Tree [Boot-as-Recovery FIXED]"
         continue-on-error: false
         run: |
           mkdir -p ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt
@@ -164,7 +178,7 @@ jobs:
           # Copy DTB
           [ -f "${{ github.workspace }}/stock_boot/dtb" ] && cp ${{ github.workspace }}/stock_boot/dtb prebuilt/dtb
           
-          # BoardConfig.mk - FIXED for Boot-as-Recovery
+          # BoardConfig.mk
           cat > BoardConfig.mk << 'EOF'
           TARGET_BOARD_PLATFORM := bengal
           TARGET_ARCH := arm64
@@ -185,13 +199,12 @@ jobs:
           BOARD_INCLUDE_DTB_IN_BOOTIMG := true
           TARGET_PREBUILT_DTB := device/oppo/PHQ110/prebuilt/dtb
           
-          # ===== BOOT-AS-RECOVERY FIX =====
+          # Boot-as-Recovery Configuration
           BOARD_USES_RECOVERY_AS_BOOT := true
           BOARD_HAS_NO_RECOVERY_PARTITION := true
           BOARD_BUILD_RECOVERY_IMAGE := false
           BOARD_BUILD_BOOT_IMAGE := true
           TW_INCLUDE_RECOVERY_RAMDISK_IN_BOOT := true
-          # =================================
           
           BOARD_BUILD_SYSTEM_ROOT_IMAGE := true
           BOARD_BOOTIMAGE_PARTITION_SIZE := 100663296
@@ -264,7 +277,7 @@ jobs:
           EOF
           
           echo 'add_lunch_combo twrp_PHQ110-eng' > vendorsetup.sh
-          echo "✓ Device tree created with Boot-as-Recovery fixes!"
+          echo "✓ Device tree created!"
 
       - name: "Compile OrangeFox Recovery [DEBUG ENABLED]"
         continue-on-error: false
@@ -284,24 +297,16 @@ jobs:
           mka ${{ env.BUILD_TARGET }} -j$(nproc --all) 2>&1 | tee build.log
           
           echo ""
-          echo "=== Build Output Directory ==="
+          echo "=== Build Output Images ==="
           ls -la out/target/product/${{ env.DEVICE }}/*.img 2>/dev/null || true
           
-          echo ""
-          echo "=== All image files ==="
-          find out -name "*.img" -type f
-          
-          # Check for output image (support both boot.img and recovery.img)
-          BOOT_IMG="out/target/product/${{ env.DEVICE }}/boot.img"
-          REC_IMG="out/target/product/${{ env.DEVICE }}/recovery.img"
-          
-          if [ -f "$BOOT_IMG" ]; then
-              echo "✓ Found boot.img (Boot-as-Recovery mode)"
-          elif [ -f "$REC_IMG" ]; then
+          # Check output
+          if [ -f "out/target/product/${{ env.DEVICE }}/boot.img" ]; then
+              echo "✓ Found boot.img (Boot-as-Recovery)"
+          elif [ -f "out/target/product/${{ env.DEVICE }}/recovery.img" ]; then
               echo "✓ Found recovery.img"
           else
-              echo "❌ ERROR: NO IMAGE FILE GENERATED!"
-              echo "=== Last 100 lines of build log ==="
+              echo "❌ No image generated!"
               tail -100 build.log
               exit 1
           fi
@@ -315,18 +320,17 @@ jobs:
           mkdir -p ${{ github.workspace }}/recovery_extract
           cd ${{ github.workspace }}/recovery_extract
           
-          # Find compiled image (boot.img first for BAR)
+          # Use boot.img first (BAR)
           if [ -f "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ]; then
               cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" recovery.img
-              echo "Using boot.img (Boot-as-Recovery)"
+              echo "Using compiled boot.img"
           else
               cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/recovery.img" recovery.img
-              echo "Using recovery.img"
+              echo "Using compiled recovery.img"
           fi
           
           cp ${{ github.workspace }}/tools/magiskboot .
           ./magiskboot unpack recovery.img
-          echo "=== Extracted Components ==="
           ls -la
 
       - name: "Patch Device Tree (DTB)"
@@ -359,43 +363,25 @@ jobs:
           ls -la OrangeFox-R14-PHQ110-boot.img
           echo "✓ Repack successful!"
 
-      - name: "Prepare Final Artifacts [FIXED]"
+      - name: "Prepare Final Artifacts"
         continue-on-error: false
         run: |
           mkdir -p ${{ github.workspace }}/final_artifacts
           
-          echo "=== Available image files ==="
-          find ${{ github.workspace }} -name "*.img" -type f | grep -E "(boot|recovery)" | head -20
-          
-          # Priority 1: Use our repacked image
+          # Copy repacked image
           if [ -f "${{ github.workspace }}/stock_boot/OrangeFox-R14-PHQ110-boot.img" ]; then
               cp ${{ github.workspace }}/stock_boot/OrangeFox-R14-PHQ110-boot.img ${{ github.workspace }}/final_artifacts/
-              echo "✓ Using repacked Boot-as-Recovery image"
+              echo "✓ Copied repacked boot.img"
           fi
           
-          # Priority 2: Copy compiled images
+          # Copy compiled images
           if [ -f "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ]; then
-              cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ${{ github.workspace }}/final_artifacts/OrangeFox-R14-PHQ110-compiled-boot.img
-              echo "✓ Copied compiled boot.img"
-          fi
-          
-          if [ -f "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/recovery.img" ]; then
-              cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/recovery.img" ${{ github.workspace }}/final_artifacts/OrangeFox-R14-PHQ110-recovery.img
-              echo "✓ Copied compiled recovery.img"
+              cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ${{ github.workspace }}/final_artifacts/OrangeFox-R14-PHQ110-compiled.img
           fi
           
           cd ${{ github.workspace }}/final_artifacts
-          
-          # Generate checksums
-          if ls *.img 1> /dev/null 2>&1; then
-              md5sum *.img > md5sums.txt
-              echo ""
-              echo "=== Final Artifacts ==="
-              ls -la
-          else
-              echo "❌ WARNING: No image files found!"
-              # Don't fail, let upload step handle empty artifacts
-          fi
+          ls *.img 2>/dev/null && md5sum *.img > md5sums.txt
+          ls -la
 
       - name: "Upload Final Artifacts [ROBUST]"
         uses: "actions/upload-artifact@v4"
@@ -413,9 +399,6 @@ jobs:
         if: failure()
         run: |
           echo "=== Build Failed ==="
-          if [ -f "${{ github.workspace }}/orangefox/build.log" ]; then
-              echo "=== Last 150 lines of build log ==="
-              tail -150 ${{ github.workspace }}/orangefox/build.log
-          fi
+          [ -f "${{ github.workspace }}/orangefox/build.log" ] && tail -150 ${{ github.workspace }}/orangefox/build.log || true
           df -h && free -h
           exit 1
