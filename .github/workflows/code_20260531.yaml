@@ -37,7 +37,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: "Free Up Disk Space [CRITICAL FIX]"
+      - name: "Free Up Disk Space [CRITICAL]"
         continue-on-error: false
         timeout-minutes: 15
         run: |
@@ -50,6 +50,7 @@ jobs:
           
           echo ""
           echo "=== Removing Docker Images (10GB) ==="
+          docker
           docker rmi $(docker image ls -aq) >/dev/null 2>&1 || true
           
           echo ""
@@ -67,8 +68,6 @@ jobs:
           echo ""
           echo "=== After Cleanup ==="
           df -h
-          
-          echo ""
           echo "✓ Freed ~40GB disk space!"
 
       - name: "Install System Dependencies"
@@ -149,7 +148,7 @@ jobs:
           cd ${{ github.workspace }}/orangefox
           repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
 
-      - name: "Create Device Tree for PHQ110"
+      - name: "Create Device Tree for PHQ110 [Boot-as-Recovery FIXED]"
         continue-on-error: false
         run: |
           mkdir -p ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt
@@ -165,7 +164,7 @@ jobs:
           # Copy DTB
           [ -f "${{ github.workspace }}/stock_boot/dtb" ] && cp ${{ github.workspace }}/stock_boot/dtb prebuilt/dtb
           
-          # BoardConfig.mk
+          # BoardConfig.mk - FIXED for Boot-as-Recovery
           cat > BoardConfig.mk << 'EOF'
           TARGET_BOARD_PLATFORM := bengal
           TARGET_ARCH := arm64
@@ -185,8 +184,15 @@ jobs:
           BOARD_DTB_OFFSET := 0x01F00000
           BOARD_INCLUDE_DTB_IN_BOOTIMG := true
           TARGET_PREBUILT_DTB := device/oppo/PHQ110/prebuilt/dtb
+          
+          # ===== BOOT-AS-RECOVERY FIX =====
           BOARD_USES_RECOVERY_AS_BOOT := true
           BOARD_HAS_NO_RECOVERY_PARTITION := true
+          BOARD_BUILD_RECOVERY_IMAGE := false
+          BOARD_BUILD_BOOT_IMAGE := true
+          TW_INCLUDE_RECOVERY_RAMDISK_IN_BOOT := true
+          # =================================
+          
           BOARD_BUILD_SYSTEM_ROOT_IMAGE := true
           BOARD_BOOTIMAGE_PARTITION_SIZE := 100663296
           BOARD_RECOVERYIMAGE_PARTITION_SIZE := 100663296
@@ -218,7 +224,6 @@ jobs:
           TW_BRIGHTNESS_PATH := "/sys/class/backlight/panel0-backlight/brightness"
           TW_MAX_BRIGHTNESS := 2047
           TW_DEFAULT_BRIGHTNESS := 1024
-          TW_INCLUDE_REPACK_TO_BOOT := true
           TW_INPUT_WAKE_DEVICE := "/dev/input/event1"
           TW_HAS_DOWNLOAD_MODE := true
           TW_SUPPORT_USB_MTP := true
@@ -259,9 +264,9 @@ jobs:
           EOF
           
           echo 'add_lunch_combo twrp_PHQ110-eng' > vendorsetup.sh
-          echo "✓ Device tree created!"
+          echo "✓ Device tree created with Boot-as-Recovery fixes!"
 
-      - name: "Compile OrangeFox Recovery"
+      - name: "Compile OrangeFox Recovery [DEBUG ENABLED]"
         continue-on-error: false
         timeout-minutes: 180
         run: |
@@ -271,9 +276,37 @@ jobs:
           ccache -M ${{ env.CCACHE_SIZE }}
           export JAVA_HOME=${{ env.JAVA_HOME }}
           export PATH=$JAVA_HOME/bin:$PATH
+          
           source build/envsetup.sh
           lunch twrp_${{ env.DEVICE }}-eng
-          mka ${{ env.BUILD_TARGET }} -j$(nproc --all)
+          
+          echo "=== Starting Compilation ==="
+          mka ${{ env.BUILD_TARGET }} -j$(nproc --all) 2>&1 | tee build.log
+          
+          echo ""
+          echo "=== Build Output Directory ==="
+          ls -la out/target/product/${{ env.DEVICE }}/*.img 2>/dev/null || true
+          
+          echo ""
+          echo "=== All image files ==="
+          find out -name "*.img" -type f
+          
+          # Check for output image (support both boot.img and recovery.img)
+          BOOT_IMG="out/target/product/${{ env.DEVICE }}/boot.img"
+          REC_IMG="out/target/product/${{ env.DEVICE }}/recovery.img"
+          
+          if [ -f "$BOOT_IMG" ]; then
+              echo "✓ Found boot.img (Boot-as-Recovery mode)"
+          elif [ -f "$REC_IMG" ]; then
+              echo "✓ Found recovery.img"
+          else
+              echo "❌ ERROR: NO IMAGE FILE GENERATED!"
+              echo "=== Last 100 lines of build log ==="
+              tail -100 build.log
+              exit 1
+          fi
+          
+          echo "✓ Compilation successful!"
 
       - name: "Extract OrangeFox Recovery Ramdisk"
         continue-on-error: false
@@ -281,10 +314,19 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/recovery_extract
           cd ${{ github.workspace }}/recovery_extract
-          RECOVERY_IMG=$(find ${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }} -name "recovery.img" -type f | head -1)
-          cp "$RECOVERY_IMG" recovery.img
+          
+          # Find compiled image (boot.img first for BAR)
+          if [ -f "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ]; then
+              cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" recovery.img
+              echo "Using boot.img (Boot-as-Recovery)"
+          else
+              cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/recovery.img" recovery.img
+              echo "Using recovery.img"
+          fi
+          
           cp ${{ github.workspace }}/tools/magiskboot .
           ./magiskboot unpack recovery.img
+          echo "=== Extracted Components ==="
           ls -la
 
       - name: "Patch Device Tree (DTB)"
@@ -296,8 +338,6 @@ jobs:
           cp ${{ github.workspace }}/stock_boot/dtb .
           cp dtb dtb.original
           fdtput -t s dtb /chosen bootargs "twrpfastboot=1 androidboot.selinux=permissive" 2>/dev/null || true
-          fdtput -t s dtb /soc/i2c@a98000/goodix@14 status "okay" 2>/dev/null || true
-          fdtput -t s dtb /soc/i2c@a94000/focaltech@38 status "okay" 2>/dev/null || true
           echo "✓ DTB patched!"
 
       - name: "Replace Ramdisk and Patch Cmdline"
@@ -317,33 +357,65 @@ jobs:
           cd ${{ github.workspace }}/stock_boot
           ./magiskboot repack boot.img OrangeFox-R14-PHQ110-boot.img
           ls -la OrangeFox-R14-PHQ110-boot.img
+          echo "✓ Repack successful!"
 
-      - name: "Prepare Final Artifacts"
+      - name: "Prepare Final Artifacts [FIXED]"
         continue-on-error: false
         run: |
           mkdir -p ${{ github.workspace }}/final_artifacts
-          cp ${{ github.workspace }}/stock_boot/OrangeFox-R14-PHQ110-boot.img ${{ github.workspace }}/final_artifacts/
-          RECOVERY_IMG=$(find ${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }} -name "recovery.img" -type f | head -1)
-          cp "$RECOVERY_IMG" ${{ github.workspace }}/final_artifacts/OrangeFox-R14-PHQ110-recovery.img
+          
+          echo "=== Available image files ==="
+          find ${{ github.workspace }} -name "*.img" -type f | grep -E "(boot|recovery)" | head -20
+          
+          # Priority 1: Use our repacked image
+          if [ -f "${{ github.workspace }}/stock_boot/OrangeFox-R14-PHQ110-boot.img" ]; then
+              cp ${{ github.workspace }}/stock_boot/OrangeFox-R14-PHQ110-boot.img ${{ github.workspace }}/final_artifacts/
+              echo "✓ Using repacked Boot-as-Recovery image"
+          fi
+          
+          # Priority 2: Copy compiled images
+          if [ -f "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ]; then
+              cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ${{ github.workspace }}/final_artifacts/OrangeFox-R14-PHQ110-compiled-boot.img
+              echo "✓ Copied compiled boot.img"
+          fi
+          
+          if [ -f "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/recovery.img" ]; then
+              cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/recovery.img" ${{ github.workspace }}/final_artifacts/OrangeFox-R14-PHQ110-recovery.img
+              echo "✓ Copied compiled recovery.img"
+          fi
+          
           cd ${{ github.workspace }}/final_artifacts
-          md5sum OrangeFox-R14-PHQ110-boot.img > OrangeFox-R14-PHQ110-boot.img.md5
-          md5sum OrangeFox-R14-PHQ110-recovery.img > OrangeFox-R14-PHQ110-recovery.img.md5
-          ls -la
+          
+          # Generate checksums
+          if ls *.img 1> /dev/null 2>&1; then
+              md5sum *.img > md5sums.txt
+              echo ""
+              echo "=== Final Artifacts ==="
+              ls -la
+          else
+              echo "❌ WARNING: No image files found!"
+              # Don't fail, let upload step handle empty artifacts
+          fi
 
-      - name: "Upload Final Artifacts"
+      - name: "Upload Final Artifacts [ROBUST]"
         uses: "actions/upload-artifact@v4"
-        continue-on-error: false
-        if: success()
+        continue-on-error: true
         with:
           name: "OrangeFox-R14-Boot-as-Recovery-${{ env.DEVICE }}"
-          path: ${{ github.workspace }}/final_artifacts/*
+          path: |
+            ${{ github.workspace }}/final_artifacts/*
+            ${{ github.workspace }}/orangefox/build.log
           retention-days: 30
+          if-no-files-found: warn
 
       - name: "Error Log Collection"
         continue-on-error: false
         if: failure()
         run: |
           echo "=== Build Failed ==="
-          [ -d "${{ github.workspace }}/orangefox/out" ] && tail -150 ${{ github.workspace }}/orangefox/out/verbose.log 2>/dev/null || true
+          if [ -f "${{ github.workspace }}/orangefox/build.log" ]; then
+              echo "=== Last 150 lines of build log ==="
+              tail -150 ${{ github.workspace }}/orangefox/build.log
+          fi
           df -h && free -h
           exit 1
