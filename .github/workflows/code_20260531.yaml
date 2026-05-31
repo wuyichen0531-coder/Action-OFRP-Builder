@@ -113,7 +113,6 @@ jobs:
           echo "=== Downloading Magisk ${{ env.MAGISK_VERSION }} ==="
           wget -O Magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/${{ env.MAGISK_VERSION }}/Magisk-${{ env.MAGISK_VERSION }}.apk"
           
-          # ✅ 关键修复：提取 x86_64 版本（GitHub Actions是x86_64）
           echo ""
           echo "=== Extracting x86_64 magiskboot ==="
           unzip -j Magisk.apk "lib/x86_64/libmagiskboot.so" -d .
@@ -147,13 +146,22 @@ jobs:
           echo "=== Unpacked Components ==="
           ls -la
 
-      - name: "Initialize OrangeFox R14 Source"
+      - name: "Initialize OrangeFox R14 Source [REPO FIXED]"
         continue-on-error: false
         timeout-minutes: 60
         run: |
           mkdir -p ${{ github.workspace }}/orangefox
           cd ${{ github.workspace }}/orangefox
-          repo init -u ${{ env.MANIFEST }} -b fox_14.1 --depth=1 --partial
+          
+          echo "=== Repo version ==="
+          repo --version
+          
+          echo ""
+          echo "=== Initializing repo (shallow clone) ==="
+          # ✅ 修复：移除 --partial（旧版repo不支持）
+          repo init -u ${{ env.MANIFEST }} -b fox_14.1 --depth=1
+          
+          echo "✓ Repo initialized successfully!"
 
       - name: "Sync OrangeFox Source Code"
         continue-on-error: false
@@ -161,6 +169,9 @@ jobs:
         run: |
           cd ${{ github.workspace }}/orangefox
           repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+          
+          echo "=== Source code size ==="
+          du -sh .
 
       - name: "Create Device Tree [Boot-as-Recovery FIXED]"
         continue-on-error: false
@@ -300,7 +311,6 @@ jobs:
           echo "=== Build Output Images ==="
           ls -la out/target/product/${{ env.DEVICE }}/*.img 2>/dev/null || true
           
-          # Check output
           if [ -f "out/target/product/${{ env.DEVICE }}/boot.img" ]; then
               echo "✓ Found boot.img (Boot-as-Recovery)"
           elif [ -f "out/target/product/${{ env.DEVICE }}/recovery.img" ]; then
@@ -320,7 +330,6 @@ jobs:
           mkdir -p ${{ github.workspace }}/recovery_extract
           cd ${{ github.workspace }}/recovery_extract
           
-          # Use boot.img first (BAR)
           if [ -f "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ]; then
               cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" recovery.img
               echo "Using compiled boot.img"
@@ -368,13 +377,11 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/final_artifacts
           
-          # Copy repacked image
           if [ -f "${{ github.workspace }}/stock_boot/OrangeFox-R14-PHQ110-boot.img" ]; then
               cp ${{ github.workspace }}/stock_boot/OrangeFox-R14-PHQ110-boot.img ${{ github.workspace }}/final_artifacts/
               echo "✓ Copied repacked boot.img"
           fi
           
-          # Copy compiled images
           if [ -f "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ]; then
               cp "${{ github.workspace }}/orangefox/out/target/product/${{ env.DEVICE }}/boot.img" ${{ github.workspace }}/final_artifacts/OrangeFox-R14-PHQ110-compiled.img
           fi
