@@ -15,7 +15,8 @@ permissions:
 env:
   DEVICE: "PHQ110"
   DEVICE_NAME: "OPPO A1 Pro 5G"
-  MANIFEST: "https://gitlab.com/OrangeFox/Manifest.git"
+  # ✅ 修复：使用GitHub官方源，无需认证
+  MANIFEST: "https://github.com/OrangeFoxRecovery/Manifest.git"
   BRANCH: "fox_14.1"
   BUILD_TARGET: "recoveryimage"
   CCACHE_DIR: "${{ github.workspace }}/ccache"
@@ -146,7 +147,7 @@ jobs:
           echo "=== Unpacked Components ==="
           ls -la
 
-      - name: "Initialize OrangeFox R14 Source [REPO FIXED]"
+      - name: "Initialize OrangeFox R14 Source [GITHUB SOURCE]"
         continue-on-error: false
         timeout-minutes: 60
         run: |
@@ -157,9 +158,8 @@ jobs:
           repo --version
           
           echo ""
-          echo "=== Initializing repo (shallow clone) ==="
-          # ✅ 修复：移除 --partial（旧版repo不支持）
-          repo init -u ${{ env.MANIFEST }} -b fox_14.1 --depth=1
+          echo "=== Initializing repo from GitHub ==="
+          repo init -u ${{ env.MANIFEST }} -b ${{ env.BRANCH }} --depth=1
           
           echo "✓ Repo initialized successfully!"
 
