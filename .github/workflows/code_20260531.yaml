@@ -21,6 +21,7 @@ env:
   CCACHE_DIR: "${{ github.workspace }}/ccache"
   CCACHE_SIZE: "50G"
   JAVA_HOME: "/usr/lib/jvm/java-11-openjdk-amd64"
+  BOOT_IMG_URL: "https://github.com/wuyichen0531-coder/action_build_twrp_device_tree/releases/download/2/boot.img"
 
 jobs:
   build:
@@ -48,6 +49,7 @@ jobs:
             build-essential \
             zip \
             curl \
+            wget \
             zlib1g-dev \
             gcc-multilib \
             g++-multilib \
@@ -70,7 +72,8 @@ jobs:
             squashfs-tools \
             openjdk-11-jdk \
             ccache \
-            repo
+            repo \
+            cpio
 
       - name: "Configure Git Environment"
         continue-on-error: false
@@ -95,7 +98,7 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/orangefox
           cd ${{ github.workspace }}/orangefox
-          repo init -u ${{ env.MANIFEST }} -b ${{ env.BRANCH }} --depth=1
+          repo init -u ${{ env.MANIFEST }} -b fox_14.1 --depth=1
 
       - name: "Sync OrangeFox Source Code"
         continue-on-error: false
@@ -104,15 +107,74 @@ jobs:
           cd ${{ github.workspace }}/orangefox
           repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
 
-      - name: "Import OPPO A1 Pro (PHQ110) Device Tree"
+      - name: "Download Stock Boot Image"
         continue-on-error: false
-        timeout-minutes: 30
+        timeout-minutes: 10
         run: |
-          mkdir -p ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
+          mkdir -p ${{ github.workspace }}/boot_extract
+          cd ${{ github.workspace }}/boot_extract
+          wget -O boot.img "${{ env.BOOT_IMG_URL }}"
+          echo "Boot image downloaded successfully"
+          ls -la boot.img
+
+      - name: "Download Magiskboot Tool"
+        continue-on-error: false
+        timeout-minutes: 5
+        run: |
+          cd ${{ github.workspace }}/boot_extract
+          wget -O magiskboot "https://github.com/topjohnwu/Magisk/releases/download/v27.0/magiskboot"
+          chmod +x magiskboot
+          ./magiskboot --version || true
+
+      - name: "Extract Kernel and DTB from Boot Image"
+        continue-on-error: false
+        timeout-minutes: 15
+        run: |
+          cd ${{ github.workspace }}/boot_extract
+          
+          # Unpack boot.img using magiskboot
+          ./magiskboot unpack boot.img
+          
+          echo "=== Extracted Files ==="
+          ls -la
+          
+          # Create device tree directory
+          mkdir -p ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt
+          
+          # Copy kernel
+          if [ -f "kernel" ]; then
+              gzip -c kernel > ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/Image.gz
+              echo "Kernel extracted and compressed successfully"
+          elif [ -f "kernel.gz" ]; then
+              cp kernel.gz ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/Image.gz
+              echo "Kernel (gzipped) copied successfully"
+          fi
+          
+          # Copy DTB
+          if [ -f "dtb" ]; then
+              cp dtb ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/dtb
+              echo "DTB extracted successfully"
+          fi
+          
+          # Copy DTBO
+          if [ -f "dtbo" ]; then
+              cp dtbo ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/dtbo
+              echo "DTBO extracted successfully"
+          fi
+          
+          # Extract kernel cmdline
+          if [ -f "header" ]; then
+              cat header | grep -a "cmdline" > kernel_cmdline.txt || true
+              echo "Kernel cmdline extracted"
+          fi
+
+      - name: "Generate BoardConfig.mk Automatically"
+        continue-on-error: false
+        run: |
           cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
           
           cat > BoardConfig.mk << 'ENDOFFILE'
-          # BoardConfig.mk for OPPO A1 Pro (PHQ110)
+          # BoardConfig.mk for OPPO A1 Pro (PHQ110) - Auto Generated
           
           # Platform
           TARGET_BOARD_PLATFORM := bengal
@@ -135,7 +197,7 @@ jobs:
           TARGET_BOOTLOADER_BOARD_NAME := bengal
           TARGET_NO_BOOTLOADER := true
           
-          # Kernel
+          # Kernel - Auto extracted from stock boot.img
           TARGET_PREBUILT_KERNEL := device/oppo/PHQ110/prebuilt/Image.gz
           BOARD_KERNEL_CMDLINE := console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket reboot=panic_warm
           BOARD_KERNEL_BASE := 0x00000000
@@ -144,6 +206,7 @@ jobs:
           BOARD_RAMDISK_OFFSET := 0x02000000
           BOARD_DTB_OFFSET := 0x01F00000
           BOARD_INCLUDE_DTB_IN_BOOTIMG := true
+          TARGET_PREBUILT_DTB := device/oppo/PHQ110/prebuilt/dtb
           
           # Partition Information (AB Slot Structure)
           BOARD_BUILD_SYSTEM_ROOT_IMAGE := true
@@ -207,13 +270,13 @@ jobs:
           TARGET_RECOVERY_FSTAB := device/oppo/PHQ110/recovery.fstab
           ENDOFFILE
 
-      - name: "Create recovery.fstab for PHQ110"
+      - name: "Generate recovery.fstab Automatically"
         continue-on-error: false
         run: |
           cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
           
           cat > recovery.fstab << 'ENDOFFILE'
-          # recovery.fstab for OPPO A1 Pro (PHQ110)
+          # recovery.fstab for OPPO A1 Pro (PHQ110) - Auto Generated
           # /boot
           /boot       emmc    /dev/block/by-name/boot                            flags=slotselect;display="Boot"
           /dtbo       emmc    /dev/block/by-name/dtbo                            flags=slotselect;display="DTBO"
@@ -247,7 +310,7 @@ jobs:
           /misc       emmc    /dev/block/by-name/misc                            flags=display="Misc"
           ENDOFFILE
 
-      - name: "Create Device Makefile"
+      - name: "Generate twrp_PHQ110.mk Automatically"
         continue-on-error: false
         run: |
           cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
@@ -255,6 +318,7 @@ jobs:
           cat > twrp_${{ env.DEVICE }}.mk << 'ENDOFFILE'
           #
           # Copyright (C) 2024 OrangeFox Recovery Project
+          # Device Makefile for OPPO A1 Pro (PHQ110) - Auto Generated
           #
           # Licensed under the Apache License, Version 2.0 (the "License");
           # you may not use this file except in compliance with the License.
@@ -287,10 +351,10 @@ jobs:
           PRODUCT_PROPERTY_OVERRIDES += \
               ro.orangefox.version=R14 \
               ro.orangefox.device=PHQ110 \
-              ro.orangefox.maintainer=OrangeFox Builder
+              ro.orangefox.maintainer=Auto-Builder
           ENDOFFILE
 
-      - name: "Create vendorsetup.sh"
+      - name: "Generate vendorsetup.sh Automatically"
         continue-on-error: false
         run: |
           cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}
@@ -298,6 +362,7 @@ jobs:
           cat > vendorsetup.sh << 'ENDOFFILE'
           #
           # Copyright (C) 2024 OrangeFox Recovery Project
+          # vendorsetup.sh for OPPO A1 Pro (PHQ110) - Auto Generated
           #
           # Licensed under the Apache License, Version 2.0 (the "License");
           # you may not use this file except in compliance with the License.
@@ -314,23 +379,15 @@ jobs:
           add_lunch_combo twrp_PHQ110-eng
           ENDOFFILE
 
-      - name: "Create Kernel Prebuilt Directory Structure"
+      - name: "Verify Device Tree Structure"
         continue-on-error: false
         run: |
-          mkdir -p ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt
-          cd ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt
+          echo "=== Device Tree Structure ==="
+          ls -laR ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/
           
-          cat > README.md << 'ENDOFFILE'
-          # Kernel Prebuilt Directory
-          
-          Please place your prebuilt kernel Image.gz here.
-          
-          File name: Image.gz
-          
-          You can extract the kernel from stock boot.img using:
-          - magiskboot unpack boot.img
-          - Or use Android Image Kitchen
-          ENDOFFILE
+          echo ""
+          echo "=== Prebuilt Kernel Files ==="
+          ls -la ${{ github.workspace }}/orangefox/device/oppo/${{ env.DEVICE }}/prebuilt/
 
       - name: "Configure Build Environment"
         continue-on-error: false
@@ -346,7 +403,7 @@ jobs:
           java -version
           
           echo "DEVICE: ${{ env.DEVICE }}"
-          echo "BRANCH: ${{ env.BRANCH }}"
+          echo "BRANCH: fox_14.1"
           echo "BUILD_TARGET: ${{ env.BUILD_TARGET }}"
 
       - name: "Execute OrangeFox Compilation"
@@ -380,10 +437,11 @@ jobs:
           =======================================
           Device: ${{ env.DEVICE_NAME }} (${{ env.DEVICE }})
           Version: R14
-          Branch: ${{ env.BRANCH }}
+          Branch: fox_14.1
           Build Date: $(date -u)
-          Build System: GitHub Actions
+          Build System: GitHub Actions (Auto Build)
           MD5: $(md5sum OrangeFox-R14-${{ env.DEVICE }}.img | awk '{print $1}')
+          Kernel: Auto-extracted from stock boot.img
           EOF
           else
               echo "Recovery image not found!"
