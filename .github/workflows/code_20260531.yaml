@@ -22,7 +22,7 @@ env:
   CCACHE_SIZE: "50G"
   JAVA_HOME: "/usr/lib/jvm/java-11-openjdk-amd64"
   STOCK_BOOT_URL: "https://github.com/wuyichen0531-coder/action_build_twrp_device_tree/releases/download/2/boot.img"
-  MAGISKBOOT_URL: "https://github.com/topjohnwu/Magisk/releases/download/v27.0/magiskboot"
+  MAGISK_VERSION: "v27.0"
 
 jobs:
   build:
@@ -94,22 +94,31 @@ jobs:
             ccache-orangefox-bar-${{ env.DEVICE }}-
             ccache-orangefox-bar-
 
-      - name: "Download and Prepare Tools"
+      - name: "Download and Prepare Tools [FIXED]"
         continue-on-error: false
         timeout-minutes: 10
         run: |
           mkdir -p ${{ github.workspace }}/tools
           cd ${{ github.workspace }}/tools
           
-          # Download magiskboot
-          wget -O magiskboot "${{ env.MAGISKBOOT_URL }}"
+          echo "=== Downloading Magisk ${{ env.MAGISK_VERSION }} ==="
+          
+          # 修复：从Magisk APK中提取magiskboot（v27+不再提供单独的magiskboot二进制）
+          wget -O Magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/${{ env.MAGISK_VERSION }}/Magisk-${{ env.MAGISK_VERSION }}.apk"
+          
+          # 提取arm64版本的magiskboot
+          unzip -j Magisk.apk "lib/arm64-v8a/libmagiskboot.so" -d .
+          mv libmagiskboot.so magiskboot
           chmod +x magiskboot
           
-          # Verify tools
-          ./magiskboot --version || true
+          # 验证工具
+          echo "=== Magiskboot Version ==="
+          ./magiskboot --version || ./magiskboot -V || true
+          
+          echo "=== DTC Version ==="
           dtc --version
           
-          echo "Tools prepared successfully"
+          echo "Tools prepared successfully!"
 
       - name: "Download and Unpack Stock Boot Image"
         continue-on-error: false
@@ -120,7 +129,7 @@ jobs:
           
           # Download stock boot.img
           wget -O boot.img "${{ env.STOCK_BOOT_URL }}"
-          echo "Stock boot.img downloaded"
+          echo "Stock boot.img downloaded successfully"
           ls -la boot.img
           
           # Copy magiskboot
@@ -135,7 +144,7 @@ jobs:
           # Show header info
           echo ""
           echo "=== Boot Image Header Info ==="
-          cat header 2>/dev/null || echo "No header file"
+          cat header 2>/dev/null || echo "No header file (new bootimg format)"
 
       - name: "Initialize OrangeFox R14 Source"
         continue-on-error: false
@@ -161,13 +170,16 @@ jobs:
           # Copy extracted kernel from stock boot
           if [ -f "${{ github.workspace }}/stock_boot/kernel" ]; then
               gzip -c ${{ github.workspace }}/stock_boot/kernel > prebuilt/Image.gz
+              echo "Kernel extracted and compressed"
           elif [ -f "${{ github.workspace }}/stock_boot/kernel.gz" ]; then
               cp ${{ github.workspace }}/stock_boot/kernel.gz prebuilt/Image.gz
+              echo "Kernel (gzipped) copied"
           fi
           
           # Copy DTB
           if [ -f "${{ github.workspace }}/stock_boot/dtb" ]; then
               cp ${{ github.workspace }}/stock_boot/dtb prebuilt/dtb
+              echo "DTB copied"
           fi
           
           # Generate BoardConfig.mk
@@ -308,6 +320,8 @@ jobs:
           
           # Generate vendorsetup.sh
           echo 'add_lunch_combo twrp_PHQ110-eng' > vendorsetup.sh
+          
+          echo "Device tree created successfully!"
 
       - name: "Compile OrangeFox Recovery"
         continue-on-error: false
@@ -348,11 +362,6 @@ jobs:
           
           echo "=== Extracted Recovery Components ==="
           ls -la
-          
-          # Show ramdisk info
-          echo ""
-          echo "=== Recovery Ramdisk Info ==="
-          ls -la ramdisk.cpio 2>/dev/null || echo "No ramdisk.cpio"
 
       - name: "Patch Device Tree (DTB)"
         continue-on-error: false
@@ -365,7 +374,7 @@ jobs:
           cp ${{ github.workspace }}/stock_boot/dtb .
           
           echo "=== Original DTB Info ==="
-          fdtdump dtb | head -50
+          fdtdump dtb | head -30
           
           # Backup original DTB
           cp dtb dtb.original
@@ -374,25 +383,16 @@ jobs:
           echo ""
           echo "=== Patching DTB for Recovery ==="
           
-          # Enable recovery mode in DTB (example patches)
-          # Note: Actual patches depend on specific device tree structure
-          
-          # Try to set bootargs/recovery related properties
+          # Enable recovery mode properties
           fdtput -t s dtb /chosen bootargs "twrpfastboot=1 androidboot.selinux=permissive" 2>/dev/null || true
           
-          # Patch touchscreen related nodes
+          # Patch touchscreen nodes
           fdtput -t s dtb /soc/i2c@a98000/goodix@14 status "okay" 2>/dev/null || true
           fdtput -t s dtb /soc/i2c@a94000/focaltech@38 status "okay" 2>/dev/null || true
           
-          # Patch display related nodes
+          # Patch display nodes
           fdtput -t s dtb /soc/mdp@ae00000 status "okay" 2>/dev/null || true
           
-          echo ""
-          echo "=== Patched DTB Info ==="
-          fdtdump dtb | head -50
-          
-          # Copy patched DTB back
-          cp dtb ${{ github.workspace }}/stock_boot/dtb.patched
           echo "DTB patching completed"
 
       - name: "Replace Ramdisk and Patch Kernel Cmdline"
@@ -406,22 +406,11 @@ jobs:
           
           # Replace with OrangeFox recovery ramdisk
           cp ${{ github.workspace }}/recovery_extract/ramdisk.cpio .
-          echo "Replaced stock ramdisk with OrangeFox recovery ramdisk"
-          
-          # Patch kernel cmdline in header
-          echo ""
-          echo "=== Patching Kernel Cmdline ==="
-          
-          # Extract and modify cmdline
-          if [ -f "header" ]; then
-              # Create new cmdline with recovery parameters
-              NEW_CMDLINE="console=ttyMSM0,115200n8 androidboot.hardware=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=a600000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket reboot=panic_warm twrpfastboot=1 androidboot.selinux=permissive skip_initramfs"
-              
-              echo "New cmdline: $NEW_CMDLINE"
-          fi
+          echo "✓ Replaced stock ramdisk with OrangeFox recovery ramdisk"
           
           # Use patched DTB
           cp ${{ github.workspace }}/dtb_patch/dtb dtb
+          echo "✓ Using patched DTB"
           
           echo "=== Final Components for Repack ==="
           ls -la
@@ -444,11 +433,6 @@ jobs:
           # Verify image size
           IMAGE_SIZE=$(stat -c%s OrangeFox-R14-PHQ110-boot.img)
           echo "Repacked image size: $IMAGE_SIZE bytes"
-          
-          # Check if size is reasonable
-          if [ $IMAGE_SIZE -lt 30000000 ]; then
-              echo "WARNING: Image size seems too small!"
-          fi
 
       - name: "Prepare Final Artifacts"
         continue-on-error: false
@@ -477,11 +461,6 @@ jobs:
           Branch: fox_14.1
           Build Type: Boot-as-Recovery (flash to boot partition)
           Build Date: $(date -u)
-          Build System: GitHub Actions
-          
-          Files:
-            - OrangeFox-R14-PHQ110-boot.img (Main - flash to boot)
-            - OrangeFox-R14-PHQ110-recovery.img (Backup)
           
           Flash Instructions:
             fastboot flash boot OrangeFox-R14-PHQ110-boot.img
@@ -492,7 +471,7 @@ jobs:
           
           Features:
             - AB Slot Support
-            - Data Decryption (FBE)
+            - Data Decryption (FBE v2)
             - SELinux Permissive
             - TWRP Fastboot Mode
             - Auto-generated from stock boot.img
@@ -523,10 +502,6 @@ jobs:
           if [ -d "${{ github.workspace }}/orangefox/out" ]; then
               echo "Last 100 lines of build log:"
               tail -100 ${{ github.workspace }}/orangefox/out/verbose.log 2>/dev/null || echo "No verbose.log found"
-              
-              echo ""
-              echo "Last 100 lines of error log:"
-              tail -100 ${{ github.workspace }}/orangefox/out/error.log 2>/dev/null || echo "No error.log found"
           fi
           
           echo ""
